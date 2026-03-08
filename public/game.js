@@ -1,12 +1,16 @@
 ﻿const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const statsEl = document.getElementById("stats");
-const inventoryEl = document.getElementById("inventory");
+const inventorySummaryEl = document.getElementById("inventorySummary");
 const messageEl = document.getElementById("message");
 const growthTimersEl = document.getElementById("growthTimers");
 const nameInput = document.getElementById("nameInput");
 const setNameBtn = document.getElementById("setNameBtn");
 const selectedSeedEl = document.getElementById("selectedSeed");
+const healthFillEl = document.getElementById("healthFill");
+const staminaFillEl = document.getElementById("staminaFill");
+const inventoryModalEl = document.getElementById("inventoryModal");
+const inventoryGridEl = document.getElementById("inventoryGrid");
 
 const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
 const ws = new WebSocket(`${wsProtocol}://${location.host}`);
@@ -19,8 +23,10 @@ const state = {
   farmSlots: [],
   plots: [],
   treasures: [],
+  monsters: [],
   selectedSeed: "carrot",
-  message: ""
+  message: "",
+  inventoryOpen: false
 };
 
 const keys = new Set();
@@ -66,9 +72,9 @@ function tileHash(x, y) {
 }
 
 function resizeCanvas() {
-  const targetW = Math.min(1400, window.innerWidth - 380);
-  const width = Math.max(700, targetW);
-  const height = Math.max(500, Math.floor(window.innerHeight - 40));
+  const targetW = Math.min(1540, window.innerWidth - 380);
+  const width = Math.max(760, targetW);
+  const height = Math.max(520, Math.floor(window.innerHeight - 40));
 
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
@@ -134,11 +140,7 @@ function drawTreeAtTile(x, y, tileSize) {
   ctx.strokeRect(tx + tileSize * 0.42, ty + tileSize * 0.62, tileSize * 0.16, tileSize * 0.28);
 }
 
-function drawWorld() {
-  if (!state.world) {
-    return;
-  }
-
+function drawGround() {
   const { tileSize, width, height, lobby } = state.world;
   const minTileX = Math.max(0, Math.floor(camera.x / tileSize) - 2);
   const minTileY = Math.max(0, Math.floor(camera.y / tileSize) - 2);
@@ -181,16 +183,9 @@ function drawWorld() {
     ctx.lineWidth = 2;
     ctx.strokeRect(p.x, p.y, slot.w * tileSize, slot.h * tileSize);
   }
-
-  const labelP = worldToScreen(lobby.x + Math.floor(lobby.w / 2), lobby.y + Math.floor(lobby.h / 2), tileSize);
-  ctx.fillStyle = "#1a1f25";
-  ctx.font = "28px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("Lobby", labelP.x, labelP.y);
 }
 
 function drawPlots() {
-  if (!state.world) return;
   const tileSize = state.world.tileSize;
 
   for (const plot of state.plots) {
@@ -216,26 +211,83 @@ function drawPlots() {
   }
 }
 
-function drawTreasures() {
-  if (!state.world) return;
-  const tileSize = state.world.tileSize;
+function drawDarkness() {
+  const you = yourPlayer();
+  if (!you || !state.world) {
+    return;
+  }
 
-  for (const chest of state.treasures) {
-    const p = worldToScreen(chest.x, chest.y, tileSize);
-    ctx.fillStyle = "#7f4e28";
-    ctx.fillRect(p.x + 3, p.y + 7, tileSize - 6, tileSize - 9);
-    ctx.fillStyle = "#f2cf66";
-    ctx.fillRect(p.x + 3, p.y + 5, tileSize - 6, 4);
-    ctx.strokeStyle = "#111111";
+  const tileSize = state.world.tileSize;
+  const lobby = state.world.lobby;
+
+  if (isInRect(you.x, you.y, lobby)) {
+    const lp = worldToScreen(lobby.x, lobby.y, tileSize);
+    const lw = lobby.w * tileSize;
+    const lh = lobby.h * tileSize;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(4, 8, 6, 0.78)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillRect(lp.x - 24, lp.y - 24, lw + 48, lh + 48);
+    ctx.restore();
+    return;
+  }
+
+  const p = worldToScreen(you.x, you.y, tileSize);
+  const cx = p.x + tileSize / 2;
+  const cy = p.y + tileSize / 2;
+  const radius = 220;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(8, 12, 8, 0.86)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.globalCompositeOperation = "destination-out";
+  const gradient = ctx.createRadialGradient(cx, cy, 35, cx, cy, radius);
+  gradient.addColorStop(0, "rgba(0,0,0,1)");
+  gradient.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawChest(chest) {
+  const tileSize = state.world.tileSize;
+  const p = worldToScreen(chest.x, chest.y, tileSize);
+
+  let top = "#9f6a3e";
+  if (chest.rarity === "rare") {
+    top = "#4c7cff";
+  } else if (chest.rarity === "legendary") {
+    top = "#ffd44c";
+  }
+
+  ctx.fillStyle = "#6f4527";
+  ctx.fillRect(p.x + 3, p.y + 7, tileSize - 6, tileSize - 9);
+  ctx.fillStyle = top;
+  ctx.fillRect(p.x + 3, p.y + 5, tileSize - 6, 4);
+  ctx.strokeStyle = "#111111";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(p.x + 3, p.y + 5, tileSize - 6, tileSize - 7);
+}
+
+function drawMonsters() {
+  const tileSize = state.world.tileSize;
+  for (const m of state.monsters) {
+    const p = worldToScreen(m.x, m.y, tileSize);
+    ctx.fillStyle = "#de2f2f";
+    ctx.fillRect(p.x + 2, p.y + 2, tileSize - 4, tileSize - 4);
+    ctx.strokeStyle = "#220909";
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(p.x + 3, p.y + 5, tileSize - 6, tileSize - 7);
+    ctx.strokeRect(p.x + 2, p.y + 2, tileSize - 4, tileSize - 4);
   }
 }
 
 function drawPlayers() {
-  if (!state.world) return;
   const tileSize = state.world.tileSize;
-
   for (const p of state.players) {
     const pos = worldToScreen(p.x, p.y, tileSize);
 
@@ -246,60 +298,61 @@ function drawPlayers() {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(pos.x + 2, pos.y + 2, tileSize - 4, tileSize - 4);
 
-    ctx.fillStyle = "#121212";
+    ctx.fillStyle = "#ffffff";
     ctx.font = "12px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(p.name, pos.x + tileSize / 2, pos.y - 3);
   }
 }
 
-function drawForestFlashlight() {
-  const you = yourPlayer();
-  if (!you || !state.world || !isForestTile(you.x, you.y)) {
-    return;
+function updateInventoryGrid(you) {
+  const slots = [
+    { label: "Carrot Seed", count: you.inventory.carrotSeed },
+    { label: "Pumpkin Seed", count: you.inventory.pumpkinSeed },
+    { label: "Gear", count: you.inventory.gear },
+    { label: "Money", count: you.money }
+  ];
+
+  const cells = [];
+  for (let i = 0; i < 27; i++) {
+    const item = slots[i] || null;
+    if (item) {
+      cells.push(`<div class="slot">${item.label}<br>x${item.count}</div>`);
+    } else {
+      cells.push('<div class="slot"></div>');
+    }
   }
-
-  const tileSize = state.world.tileSize;
-  const pos = worldToScreen(you.x, you.y, tileSize);
-  const cx = pos.x + tileSize / 2;
-  const cy = pos.y + tileSize / 2;
-  const radius = 220;
-
-  ctx.save();
-  ctx.fillStyle = "rgba(10, 14, 10, 0.85)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.globalCompositeOperation = "destination-out";
-  const gradient = ctx.createRadialGradient(cx, cy, 30, cx, cy, radius);
-  gradient.addColorStop(0, "rgba(0, 0, 0, 1)");
-  gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  inventoryGridEl.innerHTML = cells.join("");
 }
 
 function updatePanels() {
   const you = yourPlayer();
   if (!you) {
     statsEl.innerHTML = "Connecting...";
-    inventoryEl.innerHTML = "";
+    inventorySummaryEl.innerHTML = "";
     selectedSeedEl.textContent = "Selected seed: carrot";
     growthTimersEl.innerHTML = "";
+    healthFillEl.style.width = "100%";
+    staminaFillEl.style.width = "100%";
     return;
   }
 
+  const hpPct = Math.max(0, Math.min(100, (you.health / you.maxHealth) * 100));
+  const stPct = Math.max(0, Math.min(100, you.stamina));
+  healthFillEl.style.width = `${hpPct}%`;
+  staminaFillEl.style.width = `${stPct}%`;
+
   statsEl.innerHTML = [
     `Name: <b>${you.name}</b>`,
+    `Health: <b>${Math.round(you.health)}</b> / ${you.maxHealth}`,
+    `Stamina: <b>${Math.round(you.stamina)}</b>`,
     `Money: <b>$${you.money}</b>`,
     `Harvested: <b>${you.harvested}</b>`,
     `Farm slot: <b>${you.farmSlotId || "None"}</b>`,
     `Online: <b>${state.players.length}</b>`
   ].join("<br>");
 
-  inventoryEl.innerHTML = [
+  inventorySummaryEl.innerHTML = [
     "<b>Inventory</b>",
     `Carrot Seeds: <b>${you.inventory.carrotSeed}</b>`,
     `Pumpkin Seeds: <b>${you.inventory.pumpkinSeed}</b>`,
@@ -321,6 +374,8 @@ function updatePanels() {
     });
     growthTimersEl.innerHTML = `<b>Growth Timers</b><br>${lines.join("<br>")}`;
   }
+
+  updateInventoryGrid(you);
 }
 
 function render() {
@@ -330,20 +385,26 @@ function render() {
 
   resizeCanvas();
   updateCamera();
-  drawWorld();
+  drawGround();
   drawPlots();
-  drawTreasures();
+  drawDarkness();
+
+  for (const chest of state.treasures) {
+    drawChest(chest);
+  }
+
+  drawMonsters();
   drawPlayers();
-  drawForestFlashlight();
   updatePanels();
 }
 
 function gameLoop() {
   const now = performance.now();
   const move = keyToMove();
+  const sprint = keys.has("Shift");
 
-  if ((move.dx !== 0 || move.dy !== 0) && now - lastMoveAt > 85) {
-    send({ type: "move", dx: move.dx, dy: move.dy });
+  if (!state.inventoryOpen && (move.dx !== 0 || move.dy !== 0) && now - lastMoveAt > 80) {
+    send({ type: "move", dx: move.dx, dy: move.dy, sprint });
     lastMoveAt = now;
   }
 
@@ -353,6 +414,13 @@ function gameLoop() {
 
 window.addEventListener("keydown", (e) => {
   keys.add(e.key);
+
+  if (e.key === "i" || e.key === "I") {
+    state.inventoryOpen = !state.inventoryOpen;
+    inventoryModalEl.classList.toggle("hidden", !state.inventoryOpen);
+    e.preventDefault();
+    return;
+  }
 
   if (e.key === "1") {
     state.selectedSeed = "carrot";
@@ -364,7 +432,7 @@ window.addEventListener("keydown", (e) => {
   }
 
   const you = yourPlayer();
-  if (!you) return;
+  if (!you || state.inventoryOpen) return;
 
   if (e.key === "e" || e.key === "E") {
     send({ type: "plant", x: you.x, y: you.y, cropType: state.selectedSeed });
@@ -391,8 +459,15 @@ setNameBtn.addEventListener("click", () => {
   send({ type: "rename", name });
 });
 
+inventoryModalEl.addEventListener("click", (e) => {
+  if (e.target === inventoryModalEl) {
+    state.inventoryOpen = false;
+    inventoryModalEl.classList.add("hidden");
+  }
+});
+
 ws.addEventListener("open", () => {
-  showMessage("Connected. Forest is dark outside the lobby. Use G on chest tiles.");
+  showMessage("Connected. Brown=common chest, Blue=rare, Yellow=legendary.");
   resizeCanvas();
   gameLoop();
 });
@@ -424,6 +499,7 @@ ws.addEventListener("message", (event) => {
     state.farmSlots = msg.farmSlots || [];
     state.plots = msg.plots || [];
     state.treasures = msg.treasures || [];
+    state.monsters = msg.monsters || [];
   }
 
   if (msg.type === "rename_ok") {

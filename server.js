@@ -12,14 +12,10 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const WORLD = {
-  width: 180,
-  height: 120,
+  width: 260,
+  height: 180,
   tileSize: 20,
-  lobby: { x: 58, y: 34, w: 64, h: 52 },
-  exits: {
-    left: { x: 58, y1: 56, y2: 63 },
-    right: { x: 121, y1: 56, y2: 63 }
-  }
+  lobby: { x: 98, y: 62, w: 64, h: 56 }
 };
 
 const CROP_TYPES = {
@@ -41,14 +37,18 @@ const CROP_TYPES = {
   }
 };
 
-const TREASURE_TARGET = 50;
+const TREASURE_TARGET = 90;
+const TREASURE_MIN_DIST = 8;
+const MONSTER_COUNT = 28;
 
 const players = new Map();
 const socketsByPlayerId = new Map();
 const plots = new Map();
 const treasures = new Map();
+const monsters = new Map();
 const farmSlots = buildFarmSlots();
 let nextPlayerId = 1;
+let nextMonsterId = 1;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -60,6 +60,12 @@ function randomInt(min, max) {
 
 function tileKey(x, y) {
   return `${x},${y}`;
+}
+
+function dist(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 function isInRect(x, y, rect) {
@@ -87,9 +93,9 @@ function buildFarmSlots() {
   const w = 8;
   const h = 5;
   const gapX = 3;
-  const startX = 66;
-  const rowTopY = 45;
-  const rowBottomY = 69;
+  const startX = 106;
+  const rowTopY = 76;
+  const rowBottomY = 100;
 
   let id = 1;
   for (let col = 0; col < 5; col++) {
@@ -124,7 +130,10 @@ function serializePlayers() {
     money: player.money,
     harvested: player.harvested,
     farmSlotId: player.farmSlotId,
-    inventory: player.inventory
+    inventory: player.inventory,
+    stamina: player.stamina,
+    health: player.health,
+    maxHealth: player.maxHealth
   }));
 }
 
@@ -145,6 +154,14 @@ function serializePlots(now = Date.now()) {
     });
   }
   return out;
+}
+
+function serializeTreasures() {
+  return Array.from(treasures.values());
+}
+
+function serializeMonsters() {
+  return Array.from(monsters.values());
 }
 
 function sendTo(ws, payload) {
@@ -169,7 +186,9 @@ function broadcastState() {
     players: serializePlayers(),
     farmSlots: serializeFarmSlots(),
     plots: serializePlots(),
-    treasures: Array.from(treasures.values())
+    treasures: serializeTreasures(),
+    monsters: serializeMonsters(),
+    serverTime: Date.now()
   });
 }
 
@@ -203,7 +222,7 @@ function isNameTaken(name, exceptPlayerId = null) {
 
 function findOpenSpawnInLobby() {
   const l = WORLD.lobby;
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 300; i++) {
     const x = randomInt(l.x + 2, l.x + l.w - 3);
     const y = randomInt(l.y + 2, l.y + l.h - 3);
     if (farmSlots.some((slot) => isInRect(x, y, slot))) {
@@ -255,6 +274,7 @@ function isInsideOwnedFarm(player, x, y) {
   if (!slot) {
     return false;
   }
+
   const inner = {
     x: slot.x + 1,
     y: slot.y + 1,
@@ -264,21 +284,74 @@ function isInsideOwnedFarm(player, x, y) {
   return isInRect(x, y, inner);
 }
 
+function lobbyCenter() {
+  return {
+    x: WORLD.lobby.x + WORLD.lobby.w / 2,
+    y: WORLD.lobby.y + WORLD.lobby.h / 2
+  };
+}
+
+function chestRarityForPosition(x, y) {
+  const center = lobbyCenter();
+  const d = dist({ x, y }, center);
+
+  let rareWeight = 0.09;
+  let legendaryWeight = 0.01;
+
+  if (d > 60) {
+    rareWeight = 0.18;
+    legendaryWeight = 0.04;
+  }
+  if (d > 95) {
+    rareWeight = 0.28;
+    legendaryWeight = 0.12;
+  }
+
+  const roll = Math.random();
+  if (roll < legendaryWeight) {
+    return "legendary";
+  }
+  if (roll < legendaryWeight + rareWeight) {
+    return "rare";
+  }
+  return "common";
+}
+
 function spawnTreasure() {
-  for (let i = 0; i < 300; i++) {
+  for (let i = 0; i < 600; i++) {
     const x = randomInt(0, WORLD.width - 1);
     const y = randomInt(0, WORLD.height - 1);
+
     if (!isForestTile(x, y)) {
       continue;
     }
+
     const key = tileKey(x, y);
     if (treasures.has(key)) {
       continue;
     }
+
     if (Array.from(players.values()).some((p) => p.x === x && p.y === y)) {
       continue;
     }
-    treasures.set(key, { key, x, y, kind: "chest" });
+
+    let tooClose = false;
+    for (const chest of treasures.values()) {
+      if (Math.abs(chest.x - x) + Math.abs(chest.y - y) < TREASURE_MIN_DIST) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) {
+      continue;
+    }
+
+    treasures.set(key, {
+      key,
+      x,
+      y,
+      rarity: chestRarityForPosition(x, y)
+    });
     return true;
   }
   return false;
@@ -292,37 +365,147 @@ function fillTreasures() {
   }
 }
 
-function awardTreasure(player) {
+function treasureReward(player, chest) {
+  if (chest.rarity === "legendary") {
+    const seeds = randomInt(5, 9);
+    player.inventory.pumpkinSeed += seeds;
+    player.inventory.gear += 2;
+    player.money += randomInt(20, 35);
+    return `Legendary chest: +${seeds} pumpkin seeds, +2 gear`;
+  }
+
+  if (chest.rarity === "rare") {
+    const seeds = randomInt(3, 6);
+    player.inventory.carrotSeed += seeds;
+    player.inventory.pumpkinSeed += randomInt(1, 3);
+    player.inventory.gear += 1;
+    player.money += randomInt(8, 18);
+    return `Rare chest: +${seeds} carrot seeds, +1 gear`;
+  }
+
   const roll = Math.random();
-  if (roll < 0.45) {
+  if (roll < 0.55) {
     const qty = randomInt(2, 5);
     player.inventory.carrotSeed += qty;
-    return `Found ${qty} carrot seeds`;
+    return `Common chest: +${qty} carrot seeds`;
   }
-  if (roll < 0.75) {
+  if (roll < 0.85) {
     const qty = randomInt(1, 3);
     player.inventory.pumpkinSeed += qty;
-    return `Found ${qty} pumpkin seeds`;
+    return `Common chest: +${qty} pumpkin seeds`;
   }
-  if (roll < 0.92) {
-    player.inventory.gear += 1;
-    return "Found 1 gear";
-  }
-  const coins = randomInt(4, 9);
+
+  const coins = randomInt(3, 8);
   player.money += coins;
-  return `Found $${coins}`;
+  return `Common chest: +$${coins}`;
+}
+
+function findForestSpawn() {
+  for (let i = 0; i < 700; i++) {
+    const x = randomInt(0, WORLD.width - 1);
+    const y = randomInt(0, WORLD.height - 1);
+    if (!isForestTile(x, y)) {
+      continue;
+    }
+    const c = lobbyCenter();
+    if (dist({ x, y }, c) < 40) {
+      continue;
+    }
+    return { x, y };
+  }
+  return { x: 10, y: 10 };
+}
+
+function spawnMonsters() {
+  while (monsters.size < MONSTER_COUNT) {
+    const pos = findForestSpawn();
+    const id = nextMonsterId++;
+    monsters.set(id, { id, x: pos.x, y: pos.y, hp: 30 });
+  }
+}
+
+function moveTowards(from, to) {
+  const dx = clamp(to.x - from.x, -1, 1);
+  const dy = clamp(to.y - from.y, -1, 1);
+  return { dx, dy };
+}
+
+function tickMonsters() {
+  const now = Date.now();
+
+  for (const monster of monsters.values()) {
+    let nearest = null;
+    let nearestDist = Infinity;
+
+    for (const player of players.values()) {
+      const d = Math.abs(player.x - monster.x) + Math.abs(player.y - monster.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = player;
+      }
+    }
+
+    if (!nearest) {
+      continue;
+    }
+
+    const step = moveTowards(monster, nearest);
+    const moves = Math.random() < 0.35 ? 2 : 1;
+
+    for (let i = 0; i < moves; i++) {
+      const nx = clamp(monster.x + step.dx, 0, WORLD.width - 1);
+      const ny = clamp(monster.y + step.dy, 0, WORLD.height - 1);
+      if (isWalkable(nx, ny)) {
+        monster.x = nx;
+        monster.y = ny;
+      }
+    }
+
+    if (monster.x === nearest.x && monster.y === nearest.y) {
+      if (!nearest.lastDamagedAt || now - nearest.lastDamagedAt > 550) {
+        nearest.lastDamagedAt = now;
+        nearest.health = clamp(nearest.health - 8, 0, nearest.maxHealth);
+
+        if (nearest.health <= 0) {
+          const lobbySpawn = findOpenSpawnInLobby();
+          nearest.x = lobbySpawn.x;
+          nearest.y = lobbySpawn.y;
+          nearest.health = nearest.maxHealth;
+          nearest.stamina = 100;
+          nearest.money = Math.max(0, nearest.money - 10);
+
+          const sock = socketsByPlayerId.get(nearest.id);
+          if (sock) {
+            sendTo(sock, { type: "info", message: "You were downed by a monster. -$10" });
+          }
+        }
+      }
+    }
+  }
 }
 
 function handleMove(player, msg) {
   const dx = clamp(Number(msg.dx) || 0, -1, 1);
   const dy = clamp(Number(msg.dy) || 0, -1, 1);
-  const nextX = clamp(player.x + dx, 0, WORLD.width - 1);
-  const nextY = clamp(player.y + dy, 0, WORLD.height - 1);
-  if (!isWalkable(nextX, nextY)) {
-    return;
+
+  const sprint = Boolean(msg.sprint);
+  let steps = 1;
+
+  if (sprint && player.stamina >= 8) {
+    steps = 2;
+    player.stamina = clamp(player.stamina - 8, 0, 100);
+  } else {
+    player.stamina = clamp(player.stamina + 2, 0, 100);
   }
-  player.x = nextX;
-  player.y = nextY;
+
+  for (let i = 0; i < steps; i++) {
+    const nx = clamp(player.x + dx, 0, WORLD.width - 1);
+    const ny = clamp(player.y + dy, 0, WORLD.height - 1);
+    if (isWalkable(nx, ny)) {
+      player.x = nx;
+      player.y = ny;
+    }
+  }
 }
 
 function handleRename(player, msg, ws) {
@@ -412,12 +595,14 @@ function handleHarvest(player, msg, ws) {
 
 function handleGather(player, ws) {
   const key = tileKey(player.x, player.y);
-  if (!treasures.has(key)) {
+  const chest = treasures.get(key);
+  if (!chest) {
     sendTo(ws, { type: "error", message: "No treasure chest on this tile." });
     return;
   }
+
   treasures.delete(key);
-  const loot = awardTreasure(player);
+  const loot = treasureReward(player, chest);
   sendTo(ws, { type: "info", message: loot });
   fillTreasures();
 }
@@ -448,6 +633,7 @@ function handleMessage(player, ws, msg) {
 }
 
 fillTreasures();
+spawnMonsters();
 
 wss.on("connection", (ws) => {
   const id = nextPlayerId++;
@@ -468,7 +654,11 @@ wss.on("connection", (ws) => {
       carrotSeed: 2,
       pumpkinSeed: 1,
       gear: 0
-    }
+    },
+    stamina: 100,
+    health: 100,
+    maxHealth: 100,
+    lastDamagedAt: 0
   };
 
   players.set(id, player);
@@ -508,9 +698,15 @@ wss.on("connection", (ws) => {
 });
 
 setInterval(() => {
+  tickMonsters();
+
+  for (const player of players.values()) {
+    player.stamina = clamp(player.stamina + 1.2, 0, 100);
+  }
+
   fillTreasures();
   broadcastState();
-}, 700);
+}, 220);
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
