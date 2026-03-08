@@ -71,7 +71,7 @@ button {
 .stats,
 .inventory,
 .seed,
-.admin {
+.timers {
   border: 1px solid #4a5f75;
   border-radius: 8px;
   padding: 8px;
@@ -83,26 +83,8 @@ button {
   color: #ffe7ad;
 }
 
-.admin-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.admin-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.admin-row button {
-  width: auto;
-  margin: 0;
-}
-
-.hidden {
-  display: none;
+.timers {
+  color: #d8f0c8;
 }
 
 main {

@@ -24,19 +24,19 @@ const WORLD = {
 
 const CROP_TYPES = {
   carrot: {
-    growthMs: 12000,
+    growthMs: 30000,
     price: 4,
     seedKey: "carrotSeed",
     colorSeed: "#8a5a2b",
-    colorSprout: "#4fbf4f",
+    colorSprout: "#58c85d",
     colorReady: "#ff8b2b"
   },
   pumpkin: {
-    growthMs: 18000,
+    growthMs: 30000,
     price: 8,
     seedKey: "pumpkinSeed",
     colorSeed: "#7a4d23",
-    colorSprout: "#68c95e",
+    colorSprout: "#61b655",
     colorReady: "#f09b2d"
   }
 };
@@ -66,22 +66,6 @@ function isInRect(x, y, rect) {
   return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
 }
 
-function isExitTile(x, y) {
-  const left = WORLD.exits.left;
-  const right = WORLD.exits.right;
-  return (
-    (x === left.x && y >= left.y1 && y <= left.y2) ||
-    (x === right.x && y >= right.y1 && y <= right.y2)
-  );
-}
-
-function isLobbyWall(x, y) {
-  const l = WORLD.lobby;
-  const onBorder =
-    x === l.x || x === l.x + l.w - 1 || y === l.y || y === l.y + l.h - 1;
-  return onBorder && !isExitTile(x, y);
-}
-
 function isInsideWorld(x, y) {
   return x >= 0 && y >= 0 && x < WORLD.width && y < WORLD.height;
 }
@@ -95,13 +79,7 @@ function isForestTile(x, y) {
 }
 
 function isWalkable(x, y) {
-  if (!isInsideWorld(x, y)) {
-    return false;
-  }
-  if (isLobbyWall(x, y)) {
-    return false;
-  }
-  return true;
+  return isInsideWorld(x, y);
 }
 
 function buildFarmSlots() {
@@ -145,10 +123,8 @@ function serializePlayers() {
     color: player.color,
     money: player.money,
     harvested: player.harvested,
-    isAdmin: player.isAdmin,
     farmSlotId: player.farmSlotId,
-    inventory: player.inventory,
-    gearPower: player.gearPower
+    inventory: player.inventory
   }));
 }
 
@@ -163,6 +139,7 @@ function serializePlots(now = Date.now()) {
       y: plot.y,
       ownerId: plot.ownerId,
       cropType: plot.cropType,
+      plantedAt: plot.plantedAt,
       growth,
       ready: growth >= 1
     });
@@ -200,24 +177,15 @@ function colorFromId(id) {
   return `hsl(${(id * 67) % 360}, 70%, 55%)`;
 }
 
-function parseNameAndRole(rawName) {
-  const raw = String(rawName || "").trim();
-  if (!raw) {
-    return { ok: false, error: "Name cannot be empty." };
-  }
-
-  const adminMatch = raw.match(/^\(\(admin\)\s*\(?\s*(.+?)\s*\)?$/i);
-  const isAdmin = Boolean(adminMatch);
-  const name = (adminMatch ? adminMatch[1] : raw).trim();
-
+function parseName(rawName) {
+  const name = String(rawName || "").trim();
   if (!name) {
     return { ok: false, error: "Name cannot be empty." };
   }
   if (name.length > 16) {
     return { ok: false, error: "Name must be 16 characters or less." };
   }
-
-  return { ok: true, name, isAdmin };
+  return { ok: true, name };
 }
 
 function isNameTaken(name, exceptPlayerId = null) {
@@ -338,8 +306,7 @@ function awardTreasure(player) {
   }
   if (roll < 0.92) {
     player.inventory.gear += 1;
-    player.gearPower += 1;
-    return "Found 1 gear upgrade";
+    return "Found 1 gear";
   }
   const coins = randomInt(4, 9);
   player.money += coins;
@@ -359,7 +326,7 @@ function handleMove(player, msg) {
 }
 
 function handleRename(player, msg, ws) {
-  const parsed = parseNameAndRole(msg.name);
+  const parsed = parseName(msg.name);
   if (!parsed.ok) {
     sendTo(ws, { type: "error", message: parsed.error });
     return;
@@ -371,8 +338,7 @@ function handleRename(player, msg, ws) {
   }
 
   player.name = parsed.name;
-  player.isAdmin = parsed.isAdmin;
-  sendTo(ws, { type: "rename_ok", name: player.name, isAdmin: player.isAdmin });
+  sendTo(ws, { type: "rename_ok", name: player.name });
 }
 
 function handleSelectSeed(player, msg) {
@@ -456,46 +422,6 @@ function handleGather(player, ws) {
   fillTreasures();
 }
 
-function handleAdmin(player, msg, ws) {
-  if (!player.isAdmin) {
-    sendTo(ws, { type: "error", message: "Admin required." });
-    return;
-  }
-
-  const action = String(msg.action || "");
-
-  if (action === "clear_crops") {
-    plots.clear();
-    sendTo(ws, { type: "info", message: "All crops cleared." });
-    return;
-  }
-
-  if (action === "respawn_treasures") {
-    treasures.clear();
-    fillTreasures();
-    sendTo(ws, { type: "info", message: "Treasures respawned." });
-    return;
-  }
-
-  if (action === "kick_player") {
-    const targetId = Number(msg.targetId);
-    if (!Number.isInteger(targetId) || targetId === player.id) {
-      sendTo(ws, { type: "error", message: "Invalid target." });
-      return;
-    }
-
-    const targetSocket = socketsByPlayerId.get(targetId);
-    if (!targetSocket) {
-      sendTo(ws, { type: "error", message: "Player not online." });
-      return;
-    }
-
-    sendTo(targetSocket, { type: "kicked", reason: `Kicked by admin ${player.name}` });
-    targetSocket.close();
-    return;
-  }
-}
-
 function handleMessage(player, ws, msg) {
   switch (msg.type) {
     case "move":
@@ -516,9 +442,6 @@ function handleMessage(player, ws, msg) {
     case "gather":
       handleGather(player, ws);
       break;
-    case "admin":
-      handleAdmin(player, msg, ws);
-      break;
     default:
       break;
   }
@@ -537,7 +460,6 @@ wss.on("connection", (ws) => {
     x: spawn.x,
     y: spawn.y,
     color: colorFromId(id),
-    isAdmin: false,
     money: 0,
     harvested: 0,
     farmSlotId,
@@ -546,8 +468,7 @@ wss.on("connection", (ws) => {
       carrotSeed: 2,
       pumpkinSeed: 1,
       gear: 0
-    },
-    gearPower: 0
+    }
   };
 
   players.set(id, player);

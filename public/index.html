@@ -11,13 +11,14 @@
       <aside class="panel">
         <h1>Topdown Garden Online</h1>
         <label for="nameInput">Name</label>
-        <input id="nameInput" maxlength="32" placeholder="username or ((admin) username" />
+        <input id="nameInput" maxlength="16" placeholder="Enter username" />
         <button id="setNameBtn">Set Name</button>
 
         <div id="message" class="message"></div>
         <div id="stats" class="stats"></div>
         <div id="inventory" class="inventory"></div>
         <div id="selectedSeed" class="seed"></div>
+        <div id="growthTimers" class="timers"></div>
 
         <h2>Controls</h2>
         <ul>
@@ -27,13 +28,6 @@
           <li>Harvest ready crop: F</li>
           <li>Select seed: 1 (carrot), 2 (pumpkin)</li>
         </ul>
-
-        <section id="adminPanel" class="admin hidden">
-          <h2>Admin Panel</h2>
-          <button id="clearCropsBtn">Clear All Crops</button>
-          <button id="respawnTreasuresBtn">Respawn Treasures</button>
-          <div id="adminPlayers" class="admin-list"></div>
-        </section>
       </aside>
 
       <main>
