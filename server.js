@@ -1,9 +1,11 @@
-﻿const path = require("path");
+﻿const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 3000;
+const SAVE_PATH = path.join(__dirname, "save-data.json");
 
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
@@ -39,7 +41,11 @@ const CROP_TYPES = {
 
 const TREASURE_TARGET = 90;
 const TREASURE_MIN_DIST = 8;
-const MONSTER_COUNT = 28;
+const MONSTER_MAX_GLOBAL = 20;
+const MONSTER_PER_FOREST_PLAYER = 4;
+const MONSTER_SPAWN_RING_MIN = 10;
+const MONSTER_SPAWN_RING_MAX = 24;
+const MONSTER_DESPAWN_DIST = 45;
 
 const players = new Map();
 const socketsByPlayerId = new Map();
@@ -49,6 +55,31 @@ const monsters = new Map();
 const farmSlots = buildFarmSlots();
 let nextPlayerId = 1;
 let nextMonsterId = 1;
+
+let saveData = loadSaveData();
+
+function loadSaveData() {
+  try {
+    if (!fs.existsSync(SAVE_PATH)) {
+      return { profiles: {} };
+    }
+    const raw = fs.readFileSync(SAVE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return { profiles: {} };
+    }
+    if (!parsed.profiles || typeof parsed.profiles !== "object") {
+      parsed.profiles = {};
+    }
+    return parsed;
+  } catch {
+    return { profiles: {} };
+  }
+}
+
+function persistSaveData() {
+  fs.writeFileSync(SAVE_PATH, JSON.stringify(saveData, null, 2), "utf8");
+}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -133,7 +164,8 @@ function serializePlayers() {
     inventory: player.inventory,
     stamina: player.stamina,
     health: player.health,
-    maxHealth: player.maxHealth
+    maxHealth: player.maxHealth,
+    equippedItem: player.equippedItem
   }));
 }
 
@@ -236,7 +268,15 @@ function findOpenSpawnInLobby() {
   return { x: l.x + Math.floor(l.w / 2), y: l.y + Math.floor(l.h / 2) };
 }
 
-function assignFarmSlot(playerId) {
+function assignFarmSlot(playerId, preferredSlotId = null) {
+  if (preferredSlotId) {
+    const preferred = farmSlots.find((s) => s.id === preferredSlotId && s.ownerId === null);
+    if (preferred) {
+      preferred.ownerId = playerId;
+      return preferred.id;
+    }
+  }
+
   const slot = farmSlots.find((s) => s.ownerId === null);
   if (!slot) {
     return null;
@@ -370,8 +410,9 @@ function treasureReward(player, chest) {
     const seeds = randomInt(5, 9);
     player.inventory.pumpkinSeed += seeds;
     player.inventory.gear += 2;
+    player.inventory.sword += 1;
     player.money += randomInt(20, 35);
-    return `Legendary chest: +${seeds} pumpkin seeds, +2 gear`;
+    return `Legendary chest: +${seeds} pumpkin seeds, +1 sword`;
   }
 
   if (chest.rarity === "rare") {
@@ -379,20 +420,27 @@ function treasureReward(player, chest) {
     player.inventory.carrotSeed += seeds;
     player.inventory.pumpkinSeed += randomInt(1, 3);
     player.inventory.gear += 1;
+    if (Math.random() < 0.35) {
+      player.inventory.sword += 1;
+    }
     player.money += randomInt(8, 18);
-    return `Rare chest: +${seeds} carrot seeds, +1 gear`;
+    return "Rare chest loot found";
   }
 
   const roll = Math.random();
-  if (roll < 0.55) {
+  if (roll < 0.5) {
     const qty = randomInt(2, 5);
     player.inventory.carrotSeed += qty;
     return `Common chest: +${qty} carrot seeds`;
   }
-  if (roll < 0.85) {
+  if (roll < 0.8) {
     const qty = randomInt(1, 3);
     player.inventory.pumpkinSeed += qty;
     return `Common chest: +${qty} pumpkin seeds`;
+  }
+  if (roll < 0.9) {
+    player.inventory.sword += 1;
+    return "Common chest: +1 sword";
   }
 
   const coins = randomInt(3, 8);
@@ -400,27 +448,75 @@ function treasureReward(player, chest) {
   return `Common chest: +$${coins}`;
 }
 
-function findForestSpawn() {
-  for (let i = 0; i < 700; i++) {
-    const x = randomInt(0, WORLD.width - 1);
-    const y = randomInt(0, WORLD.height - 1);
+function findForestSpawnAround(player) {
+  for (let i = 0; i < 140; i++) {
+    const dx = randomInt(-MONSTER_SPAWN_RING_MAX, MONSTER_SPAWN_RING_MAX);
+    const dy = randomInt(-MONSTER_SPAWN_RING_MAX, MONSTER_SPAWN_RING_MAX);
+    const d = Math.abs(dx) + Math.abs(dy);
+    if (d < MONSTER_SPAWN_RING_MIN || d > MONSTER_SPAWN_RING_MAX) {
+      continue;
+    }
+
+    const x = clamp(player.x + dx, 0, WORLD.width - 1);
+    const y = clamp(player.y + dy, 0, WORLD.height - 1);
     if (!isForestTile(x, y)) {
       continue;
     }
-    const c = lobbyCenter();
-    if (dist({ x, y }, c) < 40) {
+
+    const occupied = Array.from(monsters.values()).some((m) => m.x === x && m.y === y);
+    if (occupied) {
       continue;
     }
+
     return { x, y };
   }
-  return { x: 10, y: 10 };
+
+  return null;
 }
 
-function spawnMonsters() {
-  while (monsters.size < MONSTER_COUNT) {
-    const pos = findForestSpawn();
+function forestPlayers() {
+  return Array.from(players.values()).filter((p) => isForestTile(p.x, p.y));
+}
+
+function rebalanceMonsters() {
+  const activePlayers = forestPlayers();
+
+  if (activePlayers.length === 0) {
+    monsters.clear();
+    return;
+  }
+
+  for (const [id, monster] of monsters) {
+    let nearAny = false;
+    for (const p of activePlayers) {
+      if (dist(monster, p) <= MONSTER_DESPAWN_DIST) {
+        nearAny = true;
+        break;
+      }
+    }
+    if (!nearAny) {
+      monsters.delete(id);
+    }
+  }
+
+  const target = Math.min(MONSTER_MAX_GLOBAL, activePlayers.length * MONSTER_PER_FOREST_PLAYER);
+  let guard = 0;
+
+  while (monsters.size < target && guard < 200) {
+    guard += 1;
+    const anchor = activePlayers[randomInt(0, activePlayers.length - 1)];
+    const pos = findForestSpawnAround(anchor);
+    if (!pos) {
+      continue;
+    }
+
     const id = nextMonsterId++;
     monsters.set(id, { id, x: pos.x, y: pos.y, hp: 30 });
+  }
+
+  while (monsters.size > target) {
+    const first = monsters.keys().next().value;
+    monsters.delete(first);
   }
 }
 
@@ -432,12 +528,13 @@ function moveTowards(from, to) {
 
 function tickMonsters() {
   const now = Date.now();
+  const activePlayers = forestPlayers();
 
   for (const monster of monsters.values()) {
     let nearest = null;
     let nearestDist = Infinity;
 
-    for (const player of players.values()) {
+    for (const player of activePlayers) {
       const d = Math.abs(player.x - monster.x) + Math.abs(player.y - monster.y);
       if (d < nearestDist) {
         nearestDist = d;
@@ -450,19 +547,19 @@ function tickMonsters() {
     }
 
     const step = moveTowards(monster, nearest);
-    const moves = Math.random() < 0.35 ? 2 : 1;
+    const moves = Math.random() < 0.25 ? 2 : 1;
 
     for (let i = 0; i < moves; i++) {
       const nx = clamp(monster.x + step.dx, 0, WORLD.width - 1);
       const ny = clamp(monster.y + step.dy, 0, WORLD.height - 1);
-      if (isWalkable(nx, ny)) {
+      if (isWalkable(nx, ny) && isForestTile(nx, ny)) {
         monster.x = nx;
         monster.y = ny;
       }
     }
 
     if (monster.x === nearest.x && monster.y === nearest.y) {
-      if (!nearest.lastDamagedAt || now - nearest.lastDamagedAt > 550) {
+      if (!nearest.lastDamagedAt || now - nearest.lastDamagedAt > 650) {
         nearest.lastDamagedAt = now;
         nearest.health = clamp(nearest.health - 8, 0, nearest.maxHealth);
 
@@ -480,6 +577,81 @@ function tickMonsters() {
           }
         }
       }
+    }
+  }
+}
+
+function saveProfile(player) {
+  if (!player.accountName) {
+    return;
+  }
+
+  const slot = getFarmSlotForPlayer(player);
+  const savedPlots = [];
+  for (const plot of plots.values()) {
+    if (plot.ownerId !== player.id) {
+      continue;
+    }
+
+    const dx = slot ? plot.x - slot.x : 0;
+    const dy = slot ? plot.y - slot.y : 0;
+    savedPlots.push({ dx, dy, cropType: plot.cropType, plantedAt: plot.plantedAt });
+  }
+
+  saveData.profiles[player.accountName] = {
+    name: player.name,
+    money: player.money,
+    harvested: player.harvested,
+    inventory: player.inventory,
+    health: player.health,
+    maxHealth: player.maxHealth,
+    stamina: player.stamina,
+    selectedSeed: player.selectedSeed,
+    equippedItem: player.equippedItem,
+    preferredSlotId: player.farmSlotId,
+    savedPlots
+  };
+
+  persistSaveData();
+}
+
+function loadProfileIntoPlayer(player, profile) {
+  player.money = Number(profile.money) || 0;
+  player.harvested = Number(profile.harvested) || 0;
+  player.health = clamp(Number(profile.health) || 100, 1, 100);
+  player.maxHealth = clamp(Number(profile.maxHealth) || 100, 50, 100);
+  player.stamina = clamp(Number(profile.stamina) || 100, 0, 100);
+  player.selectedSeed = CROP_TYPES[profile.selectedSeed] ? profile.selectedSeed : "carrot";
+
+  const inv = profile.inventory || {};
+  player.inventory = {
+    carrotSeed: Math.max(0, Number(inv.carrotSeed) || 0),
+    pumpkinSeed: Math.max(0, Number(inv.pumpkinSeed) || 0),
+    gear: Math.max(0, Number(inv.gear) || 0),
+    sword: Math.max(0, Number(inv.sword) || 0)
+  };
+
+  player.equippedItem = player.inventory.sword > 0 && profile.equippedItem === "sword" ? "sword" : "none";
+
+  releaseFarmSlot(player.id);
+  player.farmSlotId = assignFarmSlot(player.id, Number(profile.preferredSlotId) || null);
+
+  const slot = getFarmSlotForPlayer(player);
+  if (slot && Array.isArray(profile.savedPlots)) {
+    for (const p of profile.savedPlots) {
+      const x = slot.x + (Number(p.dx) || 0);
+      const y = slot.y + (Number(p.dy) || 0);
+      if (!isInsideOwnedFarm(player, x, y)) {
+        continue;
+      }
+      const cropType = CROP_TYPES[p.cropType] ? p.cropType : "carrot";
+      plots.set(tileKey(x, y), {
+        x,
+        y,
+        ownerId: player.id,
+        cropType,
+        plantedAt: Number(p.plantedAt) || Date.now()
+      });
     }
   }
 }
@@ -521,6 +693,16 @@ function handleRename(player, msg, ws) {
   }
 
   player.name = parsed.name;
+  player.accountName = parsed.name.toLowerCase();
+
+  const profile = saveData.profiles[player.accountName];
+  if (profile) {
+    loadProfileIntoPlayer(player, profile);
+    sendTo(ws, { type: "info", message: "Saved data loaded." });
+  } else {
+    saveProfile(player);
+  }
+
   sendTo(ws, { type: "rename_ok", name: player.name });
 }
 
@@ -528,6 +710,49 @@ function handleSelectSeed(player, msg) {
   const cropType = String(msg.cropType || "");
   if (CROP_TYPES[cropType]) {
     player.selectedSeed = cropType;
+  }
+}
+
+function handleEquip(player, msg, ws) {
+  const item = String(msg.item || "none");
+  if (item === "sword") {
+    if ((player.inventory.sword || 0) < 1) {
+      sendTo(ws, { type: "error", message: "No sword in inventory." });
+      return;
+    }
+    player.equippedItem = "sword";
+    return;
+  }
+
+  player.equippedItem = "none";
+}
+
+function handleAttack(player, ws) {
+  if (player.equippedItem !== "sword" || (player.inventory.sword || 0) < 1) {
+    sendTo(ws, { type: "error", message: "Equip a sword first." });
+    return;
+  }
+
+  let hits = 0;
+  const dead = [];
+  for (const monster of monsters.values()) {
+    const d = Math.abs(monster.x - player.x) + Math.abs(monster.y - player.y);
+    if (d <= 1) {
+      monster.hp -= 20;
+      hits += 1;
+      if (monster.hp <= 0) {
+        dead.push(monster.id);
+        player.money += 3;
+      }
+    }
+  }
+
+  for (const id of dead) {
+    monsters.delete(id);
+  }
+
+  if (hits === 0) {
+    sendTo(ws, { type: "error", message: "No monster in range." });
   }
 }
 
@@ -565,6 +790,8 @@ function handlePlant(player, msg, ws) {
     cropType,
     plantedAt: Date.now()
   });
+
+  saveProfile(player);
 }
 
 function handleHarvest(player, msg, ws) {
@@ -591,6 +818,8 @@ function handleHarvest(player, msg, ws) {
     player.inventory[crop.seedKey] += 1;
     sendTo(ws, { type: "info", message: `Harvest bonus +1 ${crop.seedKey}` });
   }
+
+  saveProfile(player);
 }
 
 function handleGather(player, ws) {
@@ -605,6 +834,8 @@ function handleGather(player, ws) {
   const loot = treasureReward(player, chest);
   sendTo(ws, { type: "info", message: loot });
   fillTreasures();
+
+  saveProfile(player);
 }
 
 function handleMessage(player, ws, msg) {
@@ -618,6 +849,12 @@ function handleMessage(player, ws, msg) {
     case "select_seed":
       handleSelectSeed(player, msg);
       break;
+    case "equip":
+      handleEquip(player, msg, ws);
+      break;
+    case "attack":
+      handleAttack(player, ws);
+      break;
     case "plant":
       handlePlant(player, msg, ws);
       break;
@@ -630,10 +867,11 @@ function handleMessage(player, ws, msg) {
     default:
       break;
   }
+
+  saveProfile(player);
 }
 
 fillTreasures();
-spawnMonsters();
 
 wss.on("connection", (ws) => {
   const id = nextPlayerId++;
@@ -643,6 +881,7 @@ wss.on("connection", (ws) => {
   const player = {
     id,
     name: `Farmer${id}`,
+    accountName: null,
     x: spawn.x,
     y: spawn.y,
     color: colorFromId(id),
@@ -650,10 +889,12 @@ wss.on("connection", (ws) => {
     harvested: 0,
     farmSlotId,
     selectedSeed: "carrot",
+    equippedItem: "none",
     inventory: {
       carrotSeed: 2,
       pumpkinSeed: 1,
-      gear: 0
+      gear: 0,
+      sword: 0
     },
     stamina: 100,
     health: 100,
@@ -690,6 +931,7 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    saveProfile(player);
     players.delete(id);
     socketsByPlayerId.delete(id);
     releaseFarmSlot(id);
@@ -698,10 +940,12 @@ wss.on("connection", (ws) => {
 });
 
 setInterval(() => {
+  rebalanceMonsters();
   tickMonsters();
 
   for (const player of players.values()) {
     player.stamina = clamp(player.stamina + 1.2, 0, 100);
+    saveProfile(player);
   }
 
   fillTreasures();

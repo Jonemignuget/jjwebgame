@@ -134,10 +134,6 @@ function drawTreeAtTile(x, y, tileSize) {
   ctx.arc(tx + tileSize * 0.35, ty + tileSize * 0.38, tileSize * 0.17, 0, Math.PI * 2);
   ctx.arc(tx + tileSize * 0.64, ty + tileSize * 0.39, tileSize * 0.17, 0, Math.PI * 2);
   ctx.fill();
-
-  ctx.strokeStyle = "#0f1113";
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(tx + tileSize * 0.42, ty + tileSize * 0.62, tileSize * 0.16, tileSize * 0.28);
 }
 
 function drawGround() {
@@ -294,6 +290,15 @@ function drawPlayers() {
     ctx.fillStyle = p.id === state.yourId ? "#ffffff" : p.color;
     ctx.fillRect(pos.x + 2, pos.y + 2, tileSize - 4, tileSize - 4);
 
+    if (p.equippedItem === "sword") {
+      ctx.strokeStyle = "#c9d4e0";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(pos.x + tileSize - 2, pos.y + 4);
+      ctx.lineTo(pos.x + tileSize + 6, pos.y - 6);
+      ctx.stroke();
+    }
+
     ctx.strokeStyle = "#111111";
     ctx.lineWidth = 1.5;
     ctx.strokeRect(pos.x + 2, pos.y + 2, tileSize - 4, tileSize - 4);
@@ -310,6 +315,7 @@ function updateInventoryGrid(you) {
     { label: "Carrot Seed", count: you.inventory.carrotSeed },
     { label: "Pumpkin Seed", count: you.inventory.pumpkinSeed },
     { label: "Gear", count: you.inventory.gear },
+    { label: "Sword", count: you.inventory.sword },
     { label: "Money", count: you.money }
   ];
 
@@ -356,7 +362,9 @@ function updatePanels() {
     "<b>Inventory</b>",
     `Carrot Seeds: <b>${you.inventory.carrotSeed}</b>`,
     `Pumpkin Seeds: <b>${you.inventory.pumpkinSeed}</b>`,
-    `Gear: <b>${you.inventory.gear}</b>`
+    `Gear: <b>${you.inventory.gear}</b>`,
+    `Swords: <b>${you.inventory.sword}</b>`,
+    `Equipped: <b>${you.equippedItem}</b>`
   ].join("<br>");
 
   selectedSeedEl.textContent = `Selected seed: ${state.selectedSeed}`;
@@ -430,6 +438,12 @@ window.addEventListener("keydown", (e) => {
     state.selectedSeed = "pumpkin";
     send({ type: "select_seed", cropType: "pumpkin" });
   }
+  if (e.key === "3") {
+    send({ type: "equip", item: "sword" });
+  }
+  if (e.key === "4") {
+    send({ type: "equip", item: "none" });
+  }
 
   const you = yourPlayer();
   if (!you || state.inventoryOpen) return;
@@ -442,6 +456,10 @@ window.addEventListener("keydown", (e) => {
   }
   if (e.key === "g" || e.key === "G") {
     send({ type: "gather" });
+  }
+  if (e.key === " " || e.code === "Space") {
+    send({ type: "attack" });
+    e.preventDefault();
   }
 });
 
@@ -467,7 +485,7 @@ inventoryModalEl.addEventListener("click", (e) => {
 });
 
 ws.addEventListener("open", () => {
-  showMessage("Connected. Brown=common chest, Blue=rare, Yellow=legendary.");
+  showMessage("Connected. 3=Equip sword, 4=Unequip, Space=Attack.");
   resizeCanvas();
   gameLoop();
 });
