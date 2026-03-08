@@ -12,13 +12,13 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const WORLD = {
-  width: 72,
-  height: 40,
+  width: 180,
+  height: 120,
   tileSize: 20,
-  lobby: { x: 26, y: 14, w: 20, h: 12 },
+  lobby: { x: 58, y: 34, w: 64, h: 52 },
   exits: {
-    left: { x: 26, y1: 18, y2: 21 },
-    right: { x: 45, y1: 18, y2: 21 }
+    left: { x: 58, y1: 56, y2: 63 },
+    right: { x: 121, y1: 56, y2: 63 }
   }
 };
 
@@ -36,19 +36,18 @@ const CROP_TYPES = {
     price: 8,
     seedKey: "pumpkinSeed",
     colorSeed: "#7a4d23",
-    colorSprout: "#6bcf5f",
-    colorReady: "#f39a2d"
+    colorSprout: "#68c95e",
+    colorReady: "#f09b2d"
   }
 };
 
-const TREASURE_TARGET = 30;
+const TREASURE_TARGET = 50;
 
 const players = new Map();
 const socketsByPlayerId = new Map();
 const plots = new Map();
 const treasures = new Map();
 const farmSlots = buildFarmSlots();
-
 let nextPlayerId = 1;
 
 function clamp(value, min, max) {
@@ -63,35 +62,66 @@ function tileKey(x, y) {
   return `${x},${y}`;
 }
 
-function parseTileKey(key) {
-  const [x, y] = key.split(",").map(Number);
-  return { x, y };
+function isInRect(x, y, rect) {
+  return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
+}
+
+function isExitTile(x, y) {
+  const left = WORLD.exits.left;
+  const right = WORLD.exits.right;
+  return (
+    (x === left.x && y >= left.y1 && y <= left.y2) ||
+    (x === right.x && y >= right.y1 && y <= right.y2)
+  );
+}
+
+function isLobbyWall(x, y) {
+  const l = WORLD.lobby;
+  const onBorder =
+    x === l.x || x === l.x + l.w - 1 || y === l.y || y === l.y + l.h - 1;
+  return onBorder && !isExitTile(x, y);
+}
+
+function isInsideWorld(x, y) {
+  return x >= 0 && y >= 0 && x < WORLD.width && y < WORLD.height;
+}
+
+function isFarmTile(x, y) {
+  return farmSlots.some((slot) => isInRect(x, y, slot));
+}
+
+function isForestTile(x, y) {
+  return isInsideWorld(x, y) && !isInRect(x, y, WORLD.lobby) && !isFarmTile(x, y);
+}
+
+function isWalkable(x, y) {
+  if (!isInsideWorld(x, y)) {
+    return false;
+  }
+  if (isLobbyWall(x, y)) {
+    return false;
+  }
+  return true;
 }
 
 function buildFarmSlots() {
   const slots = [];
-  const slotW = 10;
-  const slotH = 5;
-  const startX = 7;
-  const gapX = 2;
+  const w = 8;
+  const h = 5;
+  const gapX = 3;
+  const startX = 66;
+  const rowTopY = 45;
+  const rowBottomY = 69;
 
-  const rows = [3, 9, 28, 34];
   let id = 1;
-
-  for (const rowY of rows) {
-    for (let col = 0; col < 5; col++) {
-      slots.push({
-        id,
-        x: startX + col * (slotW + gapX),
-        y: rowY,
-        w: slotW,
-        h: slotH,
-        ownerId: null
-      });
-      id += 1;
-    }
+  for (let col = 0; col < 5; col++) {
+    slots.push({ id, x: startX + col * (w + gapX), y: rowTopY, w, h, ownerId: null });
+    id += 1;
   }
-
+  for (let col = 0; col < 5; col++) {
+    slots.push({ id, x: startX + col * (w + gapX), y: rowBottomY, w, h, ownerId: null });
+    id += 1;
+  }
   return slots;
 }
 
@@ -140,37 +170,34 @@ function serializePlots(now = Date.now()) {
   return out;
 }
 
-function serializeTreasures() {
-  return Array.from(treasures.values());
-}
-
 function sendTo(ws, payload) {
-  if (ws.readyState !== WebSocket.OPEN) {
-    return;
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
   }
-  ws.send(JSON.stringify(payload));
 }
 
 function broadcast(payload) {
-  const encoded = JSON.stringify(payload);
+  const data = JSON.stringify(payload);
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(encoded);
+      client.send(data);
     }
   }
 }
 
-function playerByName(name, exceptPlayerId = null) {
-  const normalized = String(name).trim().toLowerCase();
-  for (const player of players.values()) {
-    if (player.id === exceptPlayerId) {
-      continue;
-    }
-    if (player.name.toLowerCase() === normalized) {
-      return player;
-    }
-  }
-  return null;
+function broadcastState() {
+  broadcast({
+    type: "state",
+    world: WORLD,
+    players: serializePlayers(),
+    farmSlots: serializeFarmSlots(),
+    plots: serializePlots(),
+    treasures: Array.from(treasures.values())
+  });
+}
+
+function colorFromId(id) {
+  return `hsl(${(id * 67) % 360}, 70%, 55%)`;
 }
 
 function parseNameAndRole(rawName) {
@@ -193,74 +220,27 @@ function parseNameAndRole(rawName) {
   return { ok: true, name, isAdmin };
 }
 
-function colorFromId(id) {
-  return `hsl(${(id * 67) % 360}, 70%, 55%)`;
-}
-
-function isInRect(x, y, rect) {
-  return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
-}
-
-function isExitTile(x, y) {
-  const left = WORLD.exits.left;
-  const right = WORLD.exits.right;
-  if (x === left.x && y >= left.y1 && y <= left.y2) {
-    return true;
-  }
-  if (x === right.x && y >= right.y1 && y <= right.y2) {
-    return true;
+function isNameTaken(name, exceptPlayerId = null) {
+  const n = name.toLowerCase();
+  for (const player of players.values()) {
+    if (player.id === exceptPlayerId) {
+      continue;
+    }
+    if (player.name.toLowerCase() === n) {
+      return true;
+    }
   }
   return false;
 }
 
-function isLobbyWall(x, y) {
-  const l = WORLD.lobby;
-  const onBorder =
-    x === l.x || x === l.x + l.w - 1 || y === l.y || y === l.y + l.h - 1;
-
-  if (!onBorder) {
-    return false;
-  }
-
-  return !isExitTile(x, y);
-}
-
-function isInsideWorld(x, y) {
-  return x >= 0 && y >= 0 && x < WORLD.width && y < WORLD.height;
-}
-
-function isFarmTile(x, y) {
-  return farmSlots.some((slot) => isInRect(x, y, slot));
-}
-
-function isForestTile(x, y) {
-  if (!isInsideWorld(x, y)) {
-    return false;
-  }
-  if (isInRect(x, y, WORLD.lobby)) {
-    return false;
-  }
-  if (isFarmTile(x, y)) {
-    return false;
-  }
-  return true;
-}
-
-function isWalkable(x, y) {
-  if (!isInsideWorld(x, y)) {
-    return false;
-  }
-  if (isLobbyWall(x, y)) {
-    return false;
-  }
-  return true;
-}
-
 function findOpenSpawnInLobby() {
   const l = WORLD.lobby;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 200; i++) {
     const x = randomInt(l.x + 2, l.x + l.w - 3);
     const y = randomInt(l.y + 2, l.y + l.h - 3);
+    if (farmSlots.some((slot) => isInRect(x, y, slot))) {
+      continue;
+    }
     const occupied = Array.from(players.values()).some((p) => p.x === x && p.y === y);
     if (!occupied) {
       return { x, y };
@@ -270,20 +250,19 @@ function findOpenSpawnInLobby() {
 }
 
 function assignFarmSlot(playerId) {
-  const free = farmSlots.find((slot) => slot.ownerId === null);
-  if (!free) {
+  const slot = farmSlots.find((s) => s.ownerId === null);
+  if (!slot) {
     return null;
   }
-  free.ownerId = playerId;
-  return free.id;
+  slot.ownerId = playerId;
+  return slot.id;
 }
 
 function releaseFarmSlot(playerId) {
   const slot = farmSlots.find((s) => s.ownerId === playerId);
-  if (!slot) {
-    return;
+  if (slot) {
+    slot.ownerId = null;
   }
-  slot.ownerId = null;
 
   const keysToDelete = [];
   for (const [key, plot] of plots) {
@@ -296,19 +275,18 @@ function releaseFarmSlot(playerId) {
   }
 }
 
-function getFarmSlotByPlayer(player) {
+function getFarmSlotForPlayer(player) {
   if (!player.farmSlotId) {
     return null;
   }
-  return farmSlots.find((slot) => slot.id === player.farmSlotId) || null;
+  return farmSlots.find((s) => s.id === player.farmSlotId) || null;
 }
 
 function isInsideOwnedFarm(player, x, y) {
-  const slot = getFarmSlotByPlayer(player);
+  const slot = getFarmSlotForPlayer(player);
   if (!slot) {
     return false;
   }
-
   const inner = {
     x: slot.x + 1,
     y: slot.y + 1,
@@ -318,146 +296,119 @@ function isInsideOwnedFarm(player, x, y) {
   return isInRect(x, y, inner);
 }
 
-function spawnTreasureAtRandom() {
-  for (let tries = 0; tries < 120; tries++) {
+function spawnTreasure() {
+  for (let i = 0; i < 300; i++) {
     const x = randomInt(0, WORLD.width - 1);
     const y = randomInt(0, WORLD.height - 1);
     if (!isForestTile(x, y)) {
       continue;
     }
-
     const key = tileKey(x, y);
     if (treasures.has(key)) {
       continue;
     }
-
-    const occupiedByPlayer = Array.from(players.values()).some((p) => p.x === x && p.y === y);
-    if (occupiedByPlayer) {
+    if (Array.from(players.values()).some((p) => p.x === x && p.y === y)) {
       continue;
     }
-
-    treasures.set(key, {
-      key,
-      x,
-      y,
-      kind: "treasure"
-    });
+    treasures.set(key, { key, x, y, kind: "chest" });
     return true;
   }
-
   return false;
 }
 
 function fillTreasures() {
   while (treasures.size < TREASURE_TARGET) {
-    if (!spawnTreasureAtRandom()) {
+    if (!spawnTreasure()) {
       break;
     }
   }
 }
 
-function awardTreasureLoot(player) {
+function awardTreasure(player) {
   const roll = Math.random();
-
   if (roll < 0.45) {
     const qty = randomInt(2, 5);
     player.inventory.carrotSeed += qty;
     return `Found ${qty} carrot seeds`;
   }
-
   if (roll < 0.75) {
     const qty = randomInt(1, 3);
     player.inventory.pumpkinSeed += qty;
     return `Found ${qty} pumpkin seeds`;
   }
-
   if (roll < 0.92) {
     player.inventory.gear += 1;
     player.gearPower += 1;
     return "Found 1 gear upgrade";
   }
-
-  const coins = randomInt(4, 10);
+  const coins = randomInt(4, 9);
   player.money += coins;
   return `Found $${coins}`;
 }
 
-function broadcastState() {
-  broadcast({
-    type: "state",
-    world: WORLD,
-    players: serializePlayers(),
-    farmSlots: serializeFarmSlots(),
-    plots: serializePlots(),
-    treasures: serializeTreasures(),
-    serverTime: Date.now()
-  });
-}
-
-function handleMove(player, message) {
-  const dx = clamp(Number(message.dx) || 0, -1, 1);
-  const dy = clamp(Number(message.dy) || 0, -1, 1);
-
+function handleMove(player, msg) {
+  const dx = clamp(Number(msg.dx) || 0, -1, 1);
+  const dy = clamp(Number(msg.dy) || 0, -1, 1);
   const nextX = clamp(player.x + dx, 0, WORLD.width - 1);
   const nextY = clamp(player.y + dy, 0, WORLD.height - 1);
-
   if (!isWalkable(nextX, nextY)) {
     return;
   }
-
   player.x = nextX;
   player.y = nextY;
 }
 
-function handleRename(player, message, ws) {
-  const parsed = parseNameAndRole(message.name);
+function handleRename(player, msg, ws) {
+  const parsed = parseNameAndRole(msg.name);
   if (!parsed.ok) {
     sendTo(ws, { type: "error", message: parsed.error });
     return;
   }
 
-  if (playerByName(parsed.name, player.id)) {
+  if (isNameTaken(parsed.name, player.id)) {
     sendTo(ws, { type: "error", message: "Name already taken." });
     return;
   }
 
   player.name = parsed.name;
   player.isAdmin = parsed.isAdmin;
-  sendTo(ws, {
-    type: "rename_ok",
-    name: player.name,
-    isAdmin: player.isAdmin
-  });
+  sendTo(ws, { type: "rename_ok", name: player.name, isAdmin: player.isAdmin });
 }
 
-function handlePlant(player, message, ws) {
-  const cropType = String(message.cropType || "carrot");
+function handleSelectSeed(player, msg) {
+  const cropType = String(msg.cropType || "");
+  if (CROP_TYPES[cropType]) {
+    player.selectedSeed = cropType;
+  }
+}
+
+function handlePlant(player, msg, ws) {
+  const cropType = String(msg.cropType || player.selectedSeed || "carrot");
   const crop = CROP_TYPES[cropType];
   if (!crop) {
     return;
   }
 
-  const x = clamp(Math.floor(Number(message.x)), 0, WORLD.width - 1);
-  const y = clamp(Math.floor(Number(message.y)), 0, WORLD.height - 1);
+  const x = clamp(Math.floor(Number(msg.x)), 0, WORLD.width - 1);
+  const y = clamp(Math.floor(Number(msg.y)), 0, WORLD.height - 1);
 
   if (!isInsideOwnedFarm(player, x, y)) {
-    sendTo(ws, { type: "error", message: "You can only plant in your own farm slot." });
+    sendTo(ws, { type: "error", message: "Plant only inside your farm slot." });
     return;
   }
 
-  const seedKey = crop.seedKey;
-  if ((player.inventory[seedKey] || 0) <= 0) {
-    sendTo(ws, { type: "error", message: `No ${cropType} seeds in inventory.` });
+  if ((player.inventory[crop.seedKey] || 0) < 1) {
+    sendTo(ws, { type: "error", message: `No ${cropType} seeds.` });
     return;
   }
 
   const key = tileKey(x, y);
   if (plots.has(key)) {
-    sendTo(ws, { type: "error", message: "That plot already has a crop." });
+    sendTo(ws, { type: "error", message: "Plot already used." });
     return;
   }
 
-  player.inventory[seedKey] -= 1;
+  player.inventory[crop.seedKey] -= 1;
   plots.set(key, {
     x,
     y,
@@ -467,12 +418,11 @@ function handlePlant(player, message, ws) {
   });
 }
 
-function handleHarvest(player, message, ws) {
-  const x = clamp(Math.floor(Number(message.x)), 0, WORLD.width - 1);
-  const y = clamp(Math.floor(Number(message.y)), 0, WORLD.height - 1);
+function handleHarvest(player, msg, ws) {
+  const x = clamp(Math.floor(Number(msg.x)), 0, WORLD.width - 1);
+  const y = clamp(Math.floor(Number(msg.y)), 0, WORLD.height - 1);
   const key = tileKey(x, y);
   const plot = plots.get(key);
-
   if (!plot || plot.ownerId !== player.id) {
     return;
   }
@@ -480,7 +430,7 @@ function handleHarvest(player, message, ws) {
   const crop = CROP_TYPES[plot.cropType];
   const growth = (Date.now() - plot.plantedAt) / crop.growthMs;
   if (growth < 1) {
-    sendTo(ws, { type: "error", message: "Crop is not ready yet." });
+    sendTo(ws, { type: "error", message: "Crop not ready." });
     return;
   }
 
@@ -490,39 +440,29 @@ function handleHarvest(player, message, ws) {
 
   if (Math.random() < 0.35) {
     player.inventory[crop.seedKey] += 1;
-    sendTo(ws, { type: "info", message: `Harvest bonus: +1 ${crop.seedKey}` });
+    sendTo(ws, { type: "info", message: `Harvest bonus +1 ${crop.seedKey}` });
   }
 }
 
 function handleGather(player, ws) {
   const key = tileKey(player.x, player.y);
-  const treasure = treasures.get(key);
-  if (!treasure) {
-    sendTo(ws, { type: "error", message: "No treasure on this tile." });
+  if (!treasures.has(key)) {
+    sendTo(ws, { type: "error", message: "No treasure chest on this tile." });
     return;
   }
-
   treasures.delete(key);
-  const loot = awardTreasureLoot(player);
+  const loot = awardTreasure(player);
   sendTo(ws, { type: "info", message: loot });
   fillTreasures();
 }
 
-function handleSelectSeed(player, message) {
-  const cropType = String(message.cropType || "");
-  if (!CROP_TYPES[cropType]) {
-    return;
-  }
-  player.selectedSeed = cropType;
-}
-
-function handleAdmin(player, message, ws) {
+function handleAdmin(player, msg, ws) {
   if (!player.isAdmin) {
     sendTo(ws, { type: "error", message: "Admin required." });
     return;
   }
 
-  const action = String(message.action || "");
+  const action = String(msg.action || "");
 
   if (action === "clear_crops") {
     plots.clear();
@@ -530,7 +470,7 @@ function handleAdmin(player, message, ws) {
     return;
   }
 
-  if (action === "clear_treasures") {
+  if (action === "respawn_treasures") {
     treasures.clear();
     fillTreasures();
     sendTo(ws, { type: "info", message: "Treasures respawned." });
@@ -538,9 +478,9 @@ function handleAdmin(player, message, ws) {
   }
 
   if (action === "kick_player") {
-    const targetId = Number(message.targetId);
+    const targetId = Number(msg.targetId);
     if (!Number.isInteger(targetId) || targetId === player.id) {
-      sendTo(ws, { type: "error", message: "Invalid kick target." });
+      sendTo(ws, { type: "error", message: "Invalid target." });
       return;
     }
 
@@ -554,8 +494,6 @@ function handleAdmin(player, message, ws) {
     targetSocket.close();
     return;
   }
-
-  sendTo(ws, { type: "error", message: "Unknown admin action." });
 }
 
 function handleMessage(player, ws, msg) {
@@ -566,6 +504,9 @@ function handleMessage(player, ws, msg) {
     case "rename":
       handleRename(player, msg, ws);
       break;
+    case "select_seed":
+      handleSelectSeed(player, msg);
+      break;
     case "plant":
       handlePlant(player, msg, ws);
       break;
@@ -574,9 +515,6 @@ function handleMessage(player, ws, msg) {
       break;
     case "gather":
       handleGather(player, ws);
-      break;
-    case "select_seed":
-      handleSelectSeed(player, msg);
       break;
     case "admin":
       handleAdmin(player, msg, ws);
@@ -632,7 +570,6 @@ wss.on("connection", (ws) => {
     } catch {
       return;
     }
-
     if (!msg || typeof msg !== "object") {
       return;
     }

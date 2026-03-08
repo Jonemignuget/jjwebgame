@@ -24,12 +24,12 @@ const state = {
   treasures: [],
   selectedSeed: "carrot",
   isAdmin: false,
-  connected: false,
   message: ""
 };
 
 const keys = new Set();
 let lastMoveAt = 0;
+const camera = { x: 0, y: 0 };
 
 function send(payload) {
   if (ws.readyState === WebSocket.OPEN) {
@@ -50,6 +50,36 @@ function yourPlayer() {
   return playerById(state.yourId);
 }
 
+function isInRect(x, y, rect) {
+  return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
+}
+
+function isFarmTile(x, y) {
+  return state.farmSlots.some((slot) => isInRect(x, y, slot));
+}
+
+function isForestTile(x, y) {
+  return Boolean(state.world) && !isInRect(x, y, state.world.lobby) && !isFarmTile(x, y);
+}
+
+function tileHash(x, y) {
+  let n = x * 374761393 + y * 668265263;
+  n = (n ^ (n >>> 13)) >>> 0;
+  n = Math.imul(n, 1274126177) >>> 0;
+  return (n ^ (n >>> 16)) >>> 0;
+}
+
+function resizeCanvas() {
+  const targetW = Math.min(1400, window.innerWidth - 380);
+  const width = Math.max(700, targetW);
+  const height = Math.max(500, Math.floor(window.innerHeight - 40));
+
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
 function keyToMove() {
   let dx = 0;
   let dy = 0;
@@ -60,9 +90,52 @@ function keyToMove() {
   return { dx, dy };
 }
 
-function drawTile(x, y, size, color) {
-  ctx.fillStyle = color;
-  ctx.fillRect(x * size, y * size, size, size);
+function worldToScreen(wx, wy, tileSize) {
+  return {
+    x: wx * tileSize - camera.x,
+    y: wy * tileSize - camera.y
+  };
+}
+
+function updateCamera() {
+  const you = yourPlayer();
+  if (!you || !state.world) {
+    return;
+  }
+
+  const tileSize = state.world.tileSize;
+  const worldPxW = state.world.width * tileSize;
+  const worldPxH = state.world.height * tileSize;
+
+  const targetX = you.x * tileSize - canvas.width / 2 + tileSize / 2;
+  const targetY = you.y * tileSize - canvas.height / 2 + tileSize / 2;
+
+  camera.x = Math.max(0, Math.min(targetX, Math.max(0, worldPxW - canvas.width)));
+  camera.y = Math.max(0, Math.min(targetY, Math.max(0, worldPxH - canvas.height)));
+}
+
+function drawTreeAtTile(x, y, tileSize) {
+  const p = worldToScreen(x, y, tileSize);
+  const tx = p.x;
+  const ty = p.y;
+
+  if (tx < -tileSize || ty < -tileSize || tx > canvas.width + tileSize || ty > canvas.height + tileSize) {
+    return;
+  }
+
+  ctx.fillStyle = "#7a4e2e";
+  ctx.fillRect(tx + tileSize * 0.42, ty + tileSize * 0.62, tileSize * 0.16, tileSize * 0.28);
+
+  ctx.fillStyle = "#2bd463";
+  ctx.beginPath();
+  ctx.arc(tx + tileSize * 0.5, ty + tileSize * 0.3, tileSize * 0.19, 0, Math.PI * 2);
+  ctx.arc(tx + tileSize * 0.35, ty + tileSize * 0.38, tileSize * 0.17, 0, Math.PI * 2);
+  ctx.arc(tx + tileSize * 0.64, ty + tileSize * 0.39, tileSize * 0.17, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#0f1113";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(tx + tileSize * 0.42, ty + tileSize * 0.62, tileSize * 0.16, tileSize * 0.28);
 }
 
 function drawWorld() {
@@ -70,71 +143,65 @@ function drawWorld() {
     return;
   }
 
-  const { width, height, tileSize, lobby, exits } = state.world;
-  canvas.width = width * tileSize;
-  canvas.height = height * tileSize;
+  const { tileSize, width, height, lobby, exits } = state.world;
+  const minTileX = Math.max(0, Math.floor(camera.x / tileSize) - 2);
+  const minTileY = Math.max(0, Math.floor(camera.y / tileSize) - 2);
+  const maxTileX = Math.min(width - 1, Math.ceil((camera.x + canvas.width) / tileSize) + 2);
+  const maxTileY = Math.min(height - 1, Math.ceil((camera.y + canvas.height) / tileSize) + 2);
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      drawTile(x, y, tileSize, "#2f6f3b");
-    }
-  }
+  ctx.fillStyle = "#d9d9d9";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  for (const slot of state.farmSlots) {
-    for (let y = slot.y; y < slot.y + slot.h; y++) {
-      for (let x = slot.x; x < slot.x + slot.w; x++) {
-        const isBorder = x === slot.x || x === slot.x + slot.w - 1 || y === slot.y || y === slot.y + slot.h - 1;
-        if (isBorder) {
-          drawTile(x, y, tileSize, "#6e4b2f");
-        } else {
-          drawTile(x, y, tileSize, "#7f5a38");
+  for (let y = minTileY; y <= maxTileY; y++) {
+    for (let x = minTileX; x <= maxTileX; x++) {
+      const p = worldToScreen(x, y, tileSize);
+
+      if (isInRect(x, y, lobby)) {
+        ctx.fillStyle = "#ececec";
+      } else {
+        ctx.fillStyle = "#d0d0d0";
+      }
+      ctx.fillRect(p.x, p.y, tileSize, tileSize);
+
+      if (isForestTile(x, y)) {
+        const h = tileHash(x, y) % 100;
+        if (h < 22) {
+          drawTreeAtTile(x, y, tileSize);
         }
       }
     }
   }
 
-  for (let y = lobby.y; y < lobby.y + lobby.h; y++) {
-    for (let x = lobby.x; x < lobby.x + lobby.w; x++) {
-      const isBorder = x === lobby.x || x === lobby.x + lobby.w - 1 || y === lobby.y || y === lobby.y + lobby.h - 1;
-      const isLeftExit = x === exits.left.x && y >= exits.left.y1 && y <= exits.left.y2;
-      const isRightExit = x === exits.right.x && y >= exits.right.y1 && y <= exits.right.y2;
-      if (isBorder && !(isLeftExit || isRightExit)) {
-        drawTile(x, y, tileSize, "#58616e");
-      } else {
-        drawTile(x, y, tileSize, "#9aa7b8");
-      }
-    }
-  }
+  const lp = worldToScreen(lobby.x, lobby.y, tileSize);
+  ctx.strokeStyle = "#111111";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(lp.x, lp.y, lobby.w * tileSize, lobby.h * tileSize);
 
-  for (let y = exits.left.y1; y <= exits.left.y2; y++) {
-    drawTile(exits.left.x, y, tileSize, "#d9f2ff");
-  }
-  for (let y = exits.right.y1; y <= exits.right.y2; y++) {
-    drawTile(exits.right.x, y, tileSize, "#d9f2ff");
-  }
+  const leftExitP = worldToScreen(exits.left.x, exits.left.y1, tileSize);
+  ctx.fillStyle = "#b8e8ff";
+  ctx.fillRect(leftExitP.x, leftExitP.y, tileSize, (exits.left.y2 - exits.left.y1 + 1) * tileSize);
+  ctx.strokeStyle = "#0f1113";
+  ctx.strokeRect(leftExitP.x, leftExitP.y, tileSize, (exits.left.y2 - exits.left.y1 + 1) * tileSize);
 
-  ctx.strokeStyle = "rgba(0,0,0,0.13)";
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      ctx.strokeRect(x * tileSize, y * tileSize, tileSize, tileSize);
-    }
-  }
+  const rightExitP = worldToScreen(exits.right.x, exits.right.y1, tileSize);
+  ctx.fillRect(rightExitP.x, rightExitP.y, tileSize, (exits.right.y2 - exits.right.y1 + 1) * tileSize);
+  ctx.strokeRect(rightExitP.x, rightExitP.y, tileSize, (exits.right.y2 - exits.right.y1 + 1) * tileSize);
 
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "12px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("LOBBY", (lobby.x + lobby.w / 2) * tileSize, (lobby.y - 0.3) * tileSize);
-
-  state.farmSlots.forEach((slot) => {
+  for (const slot of state.farmSlots) {
+    const p = worldToScreen(slot.x, slot.y, tileSize);
     const owner = playerById(slot.ownerId);
-    const ownerName = owner ? owner.name : "Unclaimed";
-    ctx.fillStyle = owner ? "#ffe9a7" : "#d6d6d6";
-    ctx.fillText(
-      `Plot ${slot.id} - ${ownerName}`,
-      (slot.x + slot.w / 2) * tileSize,
-      (slot.y - 0.2) * tileSize
-    );
-  });
+    ctx.fillStyle = owner ? "#f7f1cf" : "#f0f0f0";
+    ctx.fillRect(p.x, p.y, slot.w * tileSize, slot.h * tileSize);
+    ctx.strokeStyle = "#111111";
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(p.x, p.y, slot.w * tileSize, slot.h * tileSize);
+  }
+
+  const labelP = worldToScreen(lobby.x + Math.floor(lobby.w / 2), lobby.y + Math.floor(lobby.h / 2), tileSize);
+  ctx.fillStyle = "#111111";
+  ctx.font = "30px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Lobby", labelP.x, labelP.y);
 }
 
 function drawPlots() {
@@ -142,25 +209,24 @@ function drawPlots() {
   const tileSize = state.world.tileSize;
 
   for (const plot of state.plots) {
+    const p = worldToScreen(plot.x, plot.y, tileSize);
     const crop = state.crops[plot.cropType];
-    const px = plot.x * tileSize;
-    const py = plot.y * tileSize;
 
-    ctx.fillStyle = "#5e3d24";
-    ctx.fillRect(px + 2, py + 2, tileSize - 4, tileSize - 4);
+    ctx.fillStyle = "#6a4428";
+    ctx.fillRect(p.x + 2, p.y + 2, tileSize - 4, tileSize - 4);
 
     const g = Math.max(0, Math.min(1, plot.growth));
     if (g < 0.33) {
       ctx.fillStyle = crop?.colorSeed || "#8a5a2b";
-      ctx.fillRect(px + tileSize / 2 - 2, py + tileSize / 2 - 2, 4, 4);
+      ctx.fillRect(p.x + tileSize / 2 - 2, p.y + tileSize / 2 - 2, 4, 4);
     } else if (g < 1) {
       ctx.fillStyle = crop?.colorSprout || "#4fbf4f";
-      ctx.fillRect(px + tileSize / 2 - 2, py + 6, 4, tileSize - 12);
-      ctx.fillRect(px + tileSize / 2 - 6, py + 8, 4, 4);
-      ctx.fillRect(px + tileSize / 2 + 2, py + 8, 4, 4);
+      ctx.fillRect(p.x + tileSize / 2 - 2, p.y + 5, 4, tileSize - 10);
+      ctx.fillRect(p.x + tileSize / 2 - 6, p.y + 8, 4, 4);
+      ctx.fillRect(p.x + tileSize / 2 + 2, p.y + 8, 4, 4);
     } else {
       ctx.fillStyle = crop?.colorReady || "#ff8b2b";
-      ctx.fillRect(px + tileSize / 2 - 6, py + tileSize / 2 - 6, 12, 12);
+      ctx.fillRect(p.x + tileSize / 2 - 6, p.y + tileSize / 2 - 6, 12, 12);
     }
   }
 }
@@ -169,14 +235,15 @@ function drawTreasures() {
   if (!state.world) return;
   const tileSize = state.world.tileSize;
 
-  for (const t of state.treasures) {
-    const px = t.x * tileSize;
-    const py = t.y * tileSize;
-
-    ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(px + 3, py + 3, tileSize - 6, tileSize - 6);
-    ctx.strokeStyle = "#9a7b1f";
-    ctx.strokeRect(px + 3, py + 3, tileSize - 6, tileSize - 6);
+  for (const chest of state.treasures) {
+    const p = worldToScreen(chest.x, chest.y, tileSize);
+    ctx.fillStyle = "#8f5a2e";
+    ctx.fillRect(p.x + 3, p.y + 7, tileSize - 6, tileSize - 9);
+    ctx.fillStyle = "#f2cf66";
+    ctx.fillRect(p.x + 3, p.y + 5, tileSize - 6, 4);
+    ctx.strokeStyle = "#111111";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(p.x + 3, p.y + 5, tileSize - 6, tileSize - 7);
   }
 }
 
@@ -185,27 +252,27 @@ function drawPlayers() {
   const tileSize = state.world.tileSize;
 
   for (const p of state.players) {
-    const px = p.x * tileSize;
-    const py = p.y * tileSize;
+    const pos = worldToScreen(p.x, p.y, tileSize);
 
     ctx.fillStyle = p.id === state.yourId ? "#ffffff" : p.color;
-    ctx.fillRect(px + 2, py + 2, tileSize - 4, tileSize - 4);
+    ctx.fillRect(pos.x + 2, pos.y + 2, tileSize - 4, tileSize - 4);
 
-    ctx.strokeStyle = "#000000";
-    ctx.strokeRect(px + 2, py + 2, tileSize - 4, tileSize - 4);
+    ctx.strokeStyle = "#111111";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(pos.x + 2, pos.y + 2, tileSize - 4, tileSize - 4);
 
-    const tag = p.isAdmin ? `[ADMIN] ${p.name}` : p.name;
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "#111111";
+    ctx.font = "12px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(tag, px + tileSize / 2, py - 2);
+    const tag = p.isAdmin ? `[ADMIN] ${p.name}` : p.name;
+    ctx.fillText(tag, pos.x + tileSize / 2, pos.y - 3);
   }
 }
 
 function updatePanels() {
   const you = yourPlayer();
   if (!you) {
-    statsEl.innerHTML = "Waiting for player state...";
+    statsEl.innerHTML = "Connecting...";
     inventoryEl.innerHTML = "";
     selectedSeedEl.textContent = "Selected seed: carrot";
     adminPanelEl.classList.add("hidden");
@@ -218,15 +285,15 @@ function updatePanels() {
     `Name: <b>${you.name}</b>${you.isAdmin ? " (ADMIN)" : ""}`,
     `Money: <b>$${you.money}</b>`,
     `Harvested: <b>${you.harvested}</b>`,
-    `Gear: <b>${you.inventory.gear}</b>`,
     `Farm slot: <b>${you.farmSlotId || "None"}</b>`,
-    `Online players: <b>${state.players.length}</b>`
+    `Online: <b>${state.players.length}</b>`
   ].join("<br>");
 
   inventoryEl.innerHTML = [
-    `<b>Inventory</b>`,
-    `Carrot Seeds: <b>${you.inventory.carrotSeed}</b> (press 1)`,
-    `Pumpkin Seeds: <b>${you.inventory.pumpkinSeed}</b> (press 2)`
+    "<b>Inventory</b>",
+    `Carrot Seeds: <b>${you.inventory.carrotSeed}</b>`,
+    `Pumpkin Seeds: <b>${you.inventory.pumpkinSeed}</b>`,
+    `Gear: <b>${you.inventory.gear}</b>`
   ].join("<br>");
 
   selectedSeedEl.textContent = `Selected seed: ${state.selectedSeed}`;
@@ -255,6 +322,9 @@ function render() {
   if (!state.world) {
     return;
   }
+
+  resizeCanvas();
+  updateCamera();
   drawWorld();
   drawPlots();
   drawTreasures();
@@ -266,7 +336,7 @@ function gameLoop() {
   const now = performance.now();
   const move = keyToMove();
 
-  if ((move.dx !== 0 || move.dy !== 0) && now - lastMoveAt > 90) {
+  if ((move.dx !== 0 || move.dy !== 0) && now - lastMoveAt > 85) {
     send({ type: "move", dx: move.dx, dy: move.dy });
     lastMoveAt = now;
   }
@@ -282,25 +352,20 @@ window.addEventListener("keydown", (e) => {
     state.selectedSeed = "carrot";
     send({ type: "select_seed", cropType: "carrot" });
   }
-
   if (e.key === "2") {
     state.selectedSeed = "pumpkin";
     send({ type: "select_seed", cropType: "pumpkin" });
   }
 
   const you = yourPlayer();
-  if (!you) {
-    return;
-  }
+  if (!you) return;
 
   if (e.key === "e" || e.key === "E") {
     send({ type: "plant", x: you.x, y: you.y, cropType: state.selectedSeed });
   }
-
   if (e.key === "f" || e.key === "F") {
     send({ type: "harvest", x: you.x, y: you.y });
   }
-
   if (e.key === "g" || e.key === "G") {
     send({ type: "gather" });
   }
@@ -310,11 +375,13 @@ window.addEventListener("keyup", (e) => {
   keys.delete(e.key);
 });
 
+window.addEventListener("resize", () => {
+  resizeCanvas();
+});
+
 setNameBtn.addEventListener("click", () => {
   const name = nameInput.value.trim();
-  if (!name) {
-    return;
-  }
+  if (!name) return;
   send({ type: "rename", name });
 });
 
@@ -323,17 +390,16 @@ clearCropsBtn.addEventListener("click", () => {
 });
 
 respawnTreasuresBtn.addEventListener("click", () => {
-  send({ type: "admin", action: "clear_treasures" });
+  send({ type: "admin", action: "respawn_treasures" });
 });
 
 ws.addEventListener("open", () => {
-  state.connected = true;
-  showMessage("Connected. Set your name and start exploring.");
+  showMessage("Connected. Use G to open treasure chests in the forest.");
+  resizeCanvas();
   gameLoop();
 });
 
 ws.addEventListener("close", () => {
-  state.connected = false;
   showMessage("Disconnected from server.");
 });
 
@@ -355,7 +421,7 @@ ws.addEventListener("message", (event) => {
   }
 
   if (msg.type === "state") {
-    state.world = msg.world;
+    state.world = msg.world || state.world;
     state.players = msg.players || [];
     state.farmSlots = msg.farmSlots || [];
     state.plots = msg.plots || [];
@@ -363,19 +429,16 @@ ws.addEventListener("message", (event) => {
   }
 
   if (msg.type === "rename_ok") {
-    showMessage(`Name set to ${msg.name}${msg.isAdmin ? " (ADMIN)" : ""}.`);
+    showMessage(`Name set: ${msg.name}${msg.isAdmin ? " (ADMIN)" : ""}`);
   }
-
-  if (msg.type === "error") {
-    showMessage(msg.message || "Action failed.");
-  }
-
   if (msg.type === "info") {
-    showMessage(msg.message || "Done.");
+    showMessage(msg.message || "Done");
   }
-
+  if (msg.type === "error") {
+    showMessage(msg.message || "Action failed");
+  }
   if (msg.type === "kicked") {
-    showMessage(msg.reason || "You were kicked.");
+    showMessage(msg.reason || "Kicked");
     ws.close();
   }
 });
