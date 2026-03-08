@@ -7,50 +7,86 @@
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <div class="layout">
-      <aside class="panel">
-        <h1>Topdown Garden Online</h1>
-        <label for="nameInput">Name</label>
-        <input id="nameInput" maxlength="16" placeholder="Enter username" />
-        <button id="setNameBtn">Set Name</button>
+    <div class="game-shell">
+      <canvas id="game" width="1280" height="800"></canvas>
 
-        <div id="message" class="message"></div>
-        <div id="stats" class="stats"></div>
-        <div id="inventorySummary" class="inventory"></div>
-        <div id="selectedSeed" class="seed"></div>
-        <div id="growthTimers" class="timers"></div>
-
-        <h2>Controls</h2>
-        <ul>
-          <li>Move: WASD or Arrow Keys</li>
-          <li>Sprint: Hold Shift (uses stamina)</li>
-          <li>Find chest in forest: G</li>
-          <li>Plant on farm tile: E</li>
-          <li>Harvest ready crop: F</li>
-          <li>Select seed: 1 (carrot), 2 (pumpkin)</li>
-          <li>Inventory grid: I</li>
-        </ul>
-      </aside>
-
-      <main>
-        <div class="hud-top">
-          <div class="bar-wrap">
-            <div class="bar-label">Health</div>
-            <div class="bar"><div id="healthFill" class="fill health"></div></div>
-          </div>
-          <div class="bar-wrap">
-            <div class="bar-label">Stamina</div>
-            <div class="bar"><div id="staminaFill" class="fill stamina"></div></div>
-          </div>
+      <div class="hud-top">
+        <div class="bar-wrap">
+          <div class="bar-label">Health</div>
+          <div class="bar"><div id="healthFill" class="fill health"></div></div>
         </div>
-        <canvas id="game" width="1200" height="800"></canvas>
-      </main>
-    </div>
+        <div class="bar-wrap">
+          <div class="bar-label">Stamina</div>
+          <div class="bar"><div id="staminaFill" class="fill stamina"></div></div>
+        </div>
+      </div>
 
-    <div id="inventoryModal" class="inventory-modal hidden">
-      <div class="inventory-window">
-        <div class="inventory-title">Inventory</div>
-        <div id="inventoryGrid" class="inventory-grid"></div>
+      <div class="hud-left">
+        <div class="title">Topdown Garden Online</div>
+        <div id="message" class="panel-block"></div>
+        <div id="stats" class="panel-block"></div>
+        <div id="inventorySummary" class="panel-block"></div>
+        <div id="selectedSeed" class="panel-block"></div>
+        <div id="growthTimers" class="panel-block"></div>
+        <div class="panel-block controls">
+          <b>Controls</b><br>
+          Move: WASD/Arrows<br>
+          Sprint: Shift<br>
+          Chest: G<br>
+          Attack: Space<br>
+          Inventory: I<br>
+          Merchant: M (near merchant)<br>
+          Equip: 3 iron, 4 fire, 5 none
+        </div>
+      </div>
+
+      <div id="nameModal" class="modal hidden">
+        <div class="window name-window">
+          <h2>Enter Name</h2>
+          <input id="nameInput" maxlength="16" placeholder="Your username" />
+          <button id="setNameBtn">Start</button>
+        </div>
+      </div>
+
+      <div id="inventoryModal" class="modal hidden">
+        <div class="window">
+          <div class="window-head">
+            <h2>Inventory</h2>
+            <button id="closeInventoryBtn">Close</button>
+          </div>
+          <div id="inventoryGrid" class="inventory-grid"></div>
+        </div>
+      </div>
+
+      <div id="farmModal" class="modal hidden">
+        <div class="window farm-window">
+          <div class="window-head">
+            <h2>Your 10x10 Farm</h2>
+            <button id="closeFarmBtn">Close</button>
+          </div>
+          <div class="farm-layout">
+            <div>
+              <h3>Seeds (drag to a cell)</h3>
+              <div id="farmSeedList" class="seed-list"></div>
+            </div>
+            <div id="farmGrid" class="farm-grid"></div>
+          </div>
+          <p class="tip">Drop seed onto a square to plant. Click a ready square to harvest.</p>
+        </div>
+      </div>
+
+      <div id="merchantModal" class="modal hidden">
+        <div class="window merchant-window">
+          <div class="window-head">
+            <h2>Merchant</h2>
+            <button id="closeMerchantBtn">Close</button>
+          </div>
+          <div class="tabs">
+            <button id="buyTabBtn" class="tab active">Buy</button>
+            <button id="sellTabBtn" class="tab">Sell</button>
+          </div>
+          <div id="merchantBody"></div>
+        </div>
       </div>
     </div>
 
