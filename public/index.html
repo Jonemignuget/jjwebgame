@@ -11,28 +11,33 @@
       <aside class="panel">
         <h1>Topdown Garden Online</h1>
         <label for="nameInput">Name</label>
-        <input id="nameInput" maxlength="32" placeholder="Name or ((admin) yourname" />
+        <input id="nameInput" maxlength="32" placeholder="username or ((admin) username" />
         <button id="setNameBtn">Set Name</button>
 
-        <div class="message" id="message"></div>
-        <div class="stats" id="stats"></div>
-
-        <section id="adminPanel" class="admin hidden">
-          <h2>Admin Panel</h2>
-          <button id="clearPlotsBtn">Clear All Crops</button>
-          <div id="adminPlayers" class="admin-list"></div>
-        </section>
+        <div id="message" class="message"></div>
+        <div id="stats" class="stats"></div>
+        <div id="inventory" class="inventory"></div>
+        <div id="selectedSeed" class="seed"></div>
 
         <h2>Controls</h2>
         <ul>
           <li>Move: WASD or Arrow Keys</li>
-          <li>Plant: E (on your tile)</li>
-          <li>Harvest: F (when crop is ready)</li>
+          <li>Find treasure in forest: G</li>
+          <li>Plant on your farm tile: E</li>
+          <li>Harvest ready crop: F</li>
+          <li>Select seed: 1 (carrot), 2 (pumpkin)</li>
         </ul>
+
+        <section id="adminPanel" class="admin hidden">
+          <h2>Admin Panel</h2>
+          <button id="clearCropsBtn">Clear All Crops</button>
+          <button id="respawnTreasuresBtn">Respawn Treasures</button>
+          <div id="adminPlayers" class="admin-list"></div>
+        </section>
       </aside>
 
       <main>
-        <canvas id="game" width="832" height="576"></canvas>
+        <canvas id="game" width="1200" height="800"></canvas>
       </main>
     </div>
 
