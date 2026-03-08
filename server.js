@@ -1,0 +1,238 @@
+﻿const path = require("path");
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+
+const PORT = process.env.PORT || 3000;
+
+const app = express();
+app.use(express.static(path.join(__dirname, "public")));
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+const WORLD = {
+  width: 26,
+  height: 18,
+  tileSize: 32
+};
+
+const CROP_TYPES = {
+  carrot: {
+    growthMs: 12000,
+    price: 4,
+    colorSeed: "#85603a",
+    colorSprout: "#45b649",
+    colorReady: "#f5841f"
+  }
+};
+
+const players = new Map();
+const plots = new Map();
+let nextPlayerId = 1;
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function randomSpawn() {
+  return {
+    x: Math.floor(Math.random() * WORLD.width),
+    y: Math.floor(Math.random() * WORLD.height)
+  };
+}
+
+function tileKey(x, y) {
+  return `${x},${y}`;
+}
+
+function serializePlots(now = Date.now()) {
+  const out = [];
+  for (const [key, plot] of plots) {
+    const crop = CROP_TYPES[plot.cropType];
+    const elapsed = now - plot.plantedAt;
+    const growth = clamp(elapsed / crop.growthMs, 0, 1);
+    out.push({
+      key,
+      x: plot.x,
+      y: plot.y,
+      ownerId: plot.ownerId,
+      cropType: plot.cropType,
+      plantedAt: plot.plantedAt,
+      growth,
+      ready: growth >= 1
+    });
+  }
+  return out;
+}
+
+function serializePlayers() {
+  const out = [];
+  for (const player of players.values()) {
+    out.push({
+      id: player.id,
+      name: player.name,
+      x: player.x,
+      y: player.y,
+      color: player.color,
+      money: player.money,
+      harvested: player.harvested
+    });
+  }
+  return out;
+}
+
+function broadcast(payload) {
+  const data = JSON.stringify(payload);
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  }
+}
+
+function broadcastState() {
+  broadcast({
+    type: "state",
+    players: serializePlayers(),
+    plots: serializePlots(),
+    world: WORLD
+  });
+}
+
+function colorFromId(id) {
+  const hue = (id * 67) % 360;
+  return `hsl(${hue}, 70%, 55%)`;
+}
+
+function handleMove(player, message) {
+  const dx = clamp(Number(message.dx) || 0, -1, 1);
+  const dy = clamp(Number(message.dy) || 0, -1, 1);
+  player.x = clamp(player.x + dx, 0, WORLD.width - 1);
+  player.y = clamp(player.y + dy, 0, WORLD.height - 1);
+}
+
+function handlePlant(player, message) {
+  const x = clamp(Math.floor(Number(message.x)), 0, WORLD.width - 1);
+  const y = clamp(Math.floor(Number(message.y)), 0, WORLD.height - 1);
+  const cropType = message.cropType in CROP_TYPES ? message.cropType : "carrot";
+
+  const key = tileKey(x, y);
+  if (plots.has(key)) {
+    return;
+  }
+
+  plots.set(key, {
+    x,
+    y,
+    ownerId: player.id,
+    cropType,
+    plantedAt: Date.now()
+  });
+}
+
+function handleHarvest(player, message) {
+  const x = clamp(Math.floor(Number(message.x)), 0, WORLD.width - 1);
+  const y = clamp(Math.floor(Number(message.y)), 0, WORLD.height - 1);
+  const key = tileKey(x, y);
+  const plot = plots.get(key);
+
+  if (!plot || plot.ownerId !== player.id) {
+    return;
+  }
+
+  const crop = CROP_TYPES[plot.cropType];
+  if (!crop) {
+    return;
+  }
+
+  const growth = (Date.now() - plot.plantedAt) / crop.growthMs;
+  if (growth < 1) {
+    return;
+  }
+
+  plots.delete(key);
+  player.money += crop.price;
+  player.harvested += 1;
+}
+
+function handleRename(player, message) {
+  const raw = String(message.name || "").trim();
+  if (!raw) {
+    return;
+  }
+  player.name = raw.slice(0, 16);
+}
+
+wss.on("connection", (ws) => {
+  const id = nextPlayerId++;
+  const spawn = randomSpawn();
+
+  const player = {
+    id,
+    name: `Farmer${id}`,
+    x: spawn.x,
+    y: spawn.y,
+    color: colorFromId(id),
+    money: 0,
+    harvested: 0
+  };
+
+  players.set(id, player);
+
+  ws.send(
+    JSON.stringify({
+      type: "welcome",
+      yourId: id,
+      world: WORLD,
+      crops: CROP_TYPES
+    })
+  );
+
+  broadcastState();
+
+  ws.on("message", (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+
+    if (!msg || typeof msg !== "object") {
+      return;
+    }
+
+    switch (msg.type) {
+      case "move":
+        handleMove(player, msg);
+        break;
+      case "plant":
+        handlePlant(player, msg);
+        break;
+      case "harvest":
+        handleHarvest(player, msg);
+        break;
+      case "rename":
+        handleRename(player, msg);
+        break;
+      default:
+        return;
+    }
+
+    broadcastState();
+  });
+
+  ws.on("close", () => {
+    players.delete(id);
+    broadcastState();
+  });
+});
+
+setInterval(() => {
+  broadcastState();
+}, 500);
+
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});

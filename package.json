@@ -1,0 +1,14 @@
+﻿{
+  "name": "jjwebgame-garden-multiplayer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Top-down 2D real-time multiplayer garden game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
