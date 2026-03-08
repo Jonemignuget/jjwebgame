@@ -28,6 +28,7 @@ const CROP_TYPES = {
 };
 
 const players = new Map();
+const socketsByPlayerId = new Map();
 const plots = new Map();
 let nextPlayerId = 1;
 
@@ -76,10 +77,18 @@ function serializePlayers() {
       y: player.y,
       color: player.color,
       money: player.money,
-      harvested: player.harvested
+      harvested: player.harvested,
+      isAdmin: player.isAdmin
     });
   }
   return out;
+}
+
+function sendTo(ws, payload) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify(payload));
 }
 
 function broadcast(payload) {
@@ -103,6 +112,48 @@ function broadcastState() {
 function colorFromId(id) {
   const hue = (id * 67) % 360;
   return `hsl(${hue}, 70%, 55%)`;
+}
+
+function normalizeName(name) {
+  return String(name).trim().toLowerCase();
+}
+
+function isNameTaken(name, exceptPlayerId = null) {
+  const normalized = normalizeName(name);
+  for (const player of players.values()) {
+    if (player.id === exceptPlayerId) {
+      continue;
+    }
+    if (normalizeName(player.name) === normalized) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function parseNameAndRole(rawName) {
+  const raw = String(rawName || "").trim();
+  if (!raw) {
+    return { ok: false, error: "Name cannot be empty." };
+  }
+
+  const adminMatch = raw.match(/^\(\(admin\)\s+(.+)$/i);
+  const isAdmin = Boolean(adminMatch);
+  let candidate = (adminMatch ? adminMatch[1] : raw).trim();
+
+  if (candidate.startsWith("(") && candidate.endsWith(")") && candidate.length > 2) {
+    candidate = candidate.slice(1, -1).trim();
+  }
+
+  if (!candidate) {
+    return { ok: false, error: "Name cannot be empty." };
+  }
+
+  if (candidate.length > 16) {
+    return { ok: false, error: "Name must be 16 characters or less." };
+  }
+
+  return { ok: true, name: candidate, isAdmin };
 }
 
 function handleMove(player, message) {
@@ -156,12 +207,61 @@ function handleHarvest(player, message) {
   player.harvested += 1;
 }
 
-function handleRename(player, message) {
-  const raw = String(message.name || "").trim();
-  if (!raw) {
-    return;
+function handleRename(player, message, ws) {
+  const parsed = parseNameAndRole(message.name);
+  if (!parsed.ok) {
+    sendTo(ws, { type: "error", message: parsed.error });
+    return false;
   }
-  player.name = raw.slice(0, 16);
+
+  if (isNameTaken(parsed.name, player.id)) {
+    sendTo(ws, { type: "error", message: "That name is already in use." });
+    return false;
+  }
+
+  player.name = parsed.name;
+  player.isAdmin = parsed.isAdmin;
+  sendTo(ws, { type: "rename_ok", name: player.name, isAdmin: player.isAdmin });
+  return true;
+}
+
+function handleAdmin(player, message, ws) {
+  if (!player.isAdmin) {
+    sendTo(ws, { type: "error", message: "Admin access required." });
+    return false;
+  }
+
+  const action = String(message.action || "");
+
+  if (action === "clear_plots") {
+    plots.clear();
+    return true;
+  }
+
+  if (action === "kick_player") {
+    const targetId = Number(message.targetId);
+    if (!Number.isInteger(targetId)) {
+      sendTo(ws, { type: "error", message: "Invalid target ID." });
+      return false;
+    }
+    if (targetId === player.id) {
+      sendTo(ws, { type: "error", message: "You cannot kick yourself." });
+      return false;
+    }
+
+    const targetSocket = socketsByPlayerId.get(targetId);
+    if (!targetSocket) {
+      sendTo(ws, { type: "error", message: "Player is not online." });
+      return false;
+    }
+
+    sendTo(targetSocket, { type: "kicked", reason: `Kicked by admin ${player.name}` });
+    targetSocket.close();
+    return true;
+  }
+
+  sendTo(ws, { type: "error", message: "Unknown admin action." });
+  return false;
 }
 
 wss.on("connection", (ws) => {
@@ -175,19 +275,19 @@ wss.on("connection", (ws) => {
     y: spawn.y,
     color: colorFromId(id),
     money: 0,
-    harvested: 0
+    harvested: 0,
+    isAdmin: false
   };
 
   players.set(id, player);
+  socketsByPlayerId.set(id, ws);
 
-  ws.send(
-    JSON.stringify({
-      type: "welcome",
-      yourId: id,
-      world: WORLD,
-      crops: CROP_TYPES
-    })
-  );
+  sendTo(ws, {
+    type: "welcome",
+    yourId: id,
+    world: WORLD,
+    crops: CROP_TYPES
+  });
 
   broadcastState();
 
@@ -214,7 +314,10 @@ wss.on("connection", (ws) => {
         handleHarvest(player, msg);
         break;
       case "rename":
-        handleRename(player, msg);
+        handleRename(player, msg, ws);
+        break;
+      case "admin":
+        handleAdmin(player, msg, ws);
         break;
       default:
         return;
@@ -225,6 +328,7 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     players.delete(id);
+    socketsByPlayerId.delete(id);
     broadcastState();
   });
 });

@@ -11,10 +11,17 @@
       <aside class="panel">
         <h1>Topdown Garden Online</h1>
         <label for="nameInput">Name</label>
-        <input id="nameInput" maxlength="16" placeholder="Your farmer name" />
+        <input id="nameInput" maxlength="32" placeholder="Name or ((admin) yourname" />
         <button id="setNameBtn">Set Name</button>
 
+        <div class="message" id="message"></div>
         <div class="stats" id="stats"></div>
+
+        <section id="adminPanel" class="admin hidden">
+          <h2>Admin Panel</h2>
+          <button id="clearPlotsBtn">Clear All Crops</button>
+          <div id="adminPlayers" class="admin-list"></div>
+        </section>
 
         <h2>Controls</h2>
         <ul>
@@ -22,9 +29,6 @@
           <li>Plant: E (on your tile)</li>
           <li>Harvest: F (when crop is ready)</li>
         </ul>
-
-        <h2>Goal</h2>
-        <p>Plant carrots, wait for growth, harvest for money, and farm with others live.</p>
       </aside>
 
       <main>

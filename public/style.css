@@ -3,10 +3,6 @@
   --panel: #232c35;
   --text: #eef4f7;
   --muted: #afbcc7;
-  --tile-grass: #3f9b59;
-  --tile-grid: rgba(0, 0, 0, 0.12);
-  --tile-you: rgba(255, 255, 255, 0.14);
-  --tile-other: rgba(0, 0, 0, 0.15);
   --accent: #ffc857;
 }
 
@@ -71,12 +67,46 @@ button {
   cursor: pointer;
 }
 
-.stats {
+.message {
+  min-height: 20px;
+  color: #ffd991;
+  font-size: 0.9rem;
+  margin: 6px 0;
+}
+
+.stats,
+.admin {
   margin-top: 10px;
   padding: 10px;
   border: 1px solid #495865;
   border-radius: 8px;
   color: var(--muted);
+}
+
+.admin-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-row button {
+  width: auto;
+  margin: 0;
+  padding: 6px 10px;
+}
+
+.admin-sub {
+  margin: 0 0 8px;
+}
+
+.hidden {
+  display: none;
 }
 
 main {
@@ -96,10 +126,6 @@ canvas {
 ul {
   margin: 8px 0;
   padding-left: 18px;
-  color: var(--muted);
-}
-
-p {
   color: var(--muted);
 }
 
